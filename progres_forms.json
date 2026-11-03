@@ -1,0 +1,10 @@
+{
+  "configuracion": {
+    "url": "https://docs.google.com/forms/d/e/1FAIpQLSe6m4tJ5e8Kp38V5nbX651s2WCypnH4eR8u9I28BCXBz8BzHw/viewform",
+    "cantidad": 4000,
+    "semilla": 42,
+    "fecha_final": "2026-11-03"
+  },
+  "ultimo_confirmado": 7,
+  "pendiente": 8
+}
