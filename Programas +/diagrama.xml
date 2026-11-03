@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<incidencies>
+    <incidencia>
+        <id>1</id>
+        <data>2026-10-15</data>
+        <usuari>Joan</usuari>
+        <correu>joan@example.com</correu>
+        <equipament>Ordinador</equipament>
+        <ubicacio>Aula 1</ubicacio>
+        <descripcio>No funciona la pantalla</descripcio>
+        <prioritat>Alta</prioritat>
+        <estat>Oberta</estat>
+        <tecnic>Marc</tecnic>
+        <data_resolucio></data_resolucio>
+    </incidencia>
+
+    <incidencia>
+        <id>2</id>
+        <data>2026-10-16</data>
+        <usuari>Maria</usuari>
+        <correu>maria@example.com</correu>
+        <equipament>Projector</equipament>
+        <ubicacio>Aula 2</ubicacio>
+        <descripcio>No es veu la imatge</descripcio>
+        <prioritat>Mitjana</prioritat>
+        <estat>En procés</estat>
+        <tecnic>Laura</tecnic>
+        <data_resolucio></data_resolucio>
+    </incidencia>
+</incidencies>
