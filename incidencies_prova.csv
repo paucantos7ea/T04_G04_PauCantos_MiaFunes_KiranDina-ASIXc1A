@@ -1,0 +1,101 @@
+id,data,equip,descripcio,prioritat,estat
+1,2026-07-10,Teclat,Problemes de connexió,Alta,Resolta
+2,2026-08-18,Monitor,Problemes de connexió,Alta,Resolta
+3,2026-07-16,Ordinador,El dispositiu funciona lentament,Baixa,Resolta
+4,2026-06-25,Projector,Problemes de connexió,Baixa,Resolta
+5,2026-09-07,Monitor,Fa sorolls estranys,Alta,Oberta
+6,2026-09-28,Impressora,El dispositiu funciona lentament,Baixa,Oberta
+7,2026-06-25,Teclat,Problemes de connexió,Alta,Resolta
+8,2026-08-09,Portàtil,El dispositiu funciona lentament,Mitjana,Oberta
+9,2026-06-28,Projector,Problemes de connexió,Alta,Oberta
+10,2026-08-03,Portàtil,Problemes de connexió,Baixa,Oberta
+11,2026-06-27,Projector,No s'encén,Mitjana,Oberta
+12,2026-09-27,Impressora,El dispositiu funciona lentament,Alta,Resolta
+13,2026-05-09,Projector,La pantalla no funciona,Alta,Resolta
+14,2026-09-22,Teclat,Problemes de connexió,Alta,Resolta
+15,2026-08-24,Teclat,No imprimeix correctament,Mitjana,En procés
+16,2026-08-05,Teclat,No imprimeix correctament,Alta,En procés
+17,2026-10-29,Teclat,El dispositiu funciona lentament,Alta,Resolta
+18,2026-06-03,Projector,Fa sorolls estranys,Baixa,Oberta
+19,2026-06-15,Monitor,La pantalla no funciona,Baixa,Oberta
+20,2026-08-06,Projector,Problemes de connexió,Mitjana,Oberta
+21,2026-05-02,Impressora,No s'encén,Mitjana,Oberta
+22,2026-06-24,Ordinador,El dispositiu funciona lentament,Mitjana,Oberta
+23,2026-08-17,Teclat,Problemes de connexió,Alta,Oberta
+24,2026-06-03,Projector,El dispositiu funciona lentament,Alta,Resolta
+25,2026-09-20,Portàtil,No imprimeix correctament,Alta,Resolta
+26,2026-07-20,Monitor,El dispositiu funciona lentament,Mitjana,Oberta
+27,2026-06-21,Projector,El dispositiu funciona lentament,Alta,En procés
+28,2026-09-18,Projector,No imprimeix correctament,Baixa,Resolta
+29,2026-05-30,Monitor,El dispositiu funciona lentament,Baixa,Oberta
+30,2026-08-29,Monitor,No imprimeix correctament,Alta,Resolta
+31,2026-06-26,Teclat,Problemes de connexió,Alta,Resolta
+32,2026-06-30,Teclat,Fa sorolls estranys,Mitjana,En procés
+33,2026-08-15,Ordinador,La pantalla no funciona,Alta,Resolta
+34,2026-09-06,Projector,El dispositiu funciona lentament,Baixa,Resolta
+35,2026-07-17,Teclat,Fa sorolls estranys,Baixa,Oberta
+36,2026-09-27,Portàtil,El dispositiu funciona lentament,Baixa,Oberta
+37,2026-05-31,Projector,Problemes de connexió,Baixa,Oberta
+38,2026-08-01,Impressora,No imprimeix correctament,Mitjana,Resolta
+39,2026-06-16,Impressora,No imprimeix correctament,Mitjana,Oberta
+40,2026-10-28,Portàtil,Problemes de connexió,Mitjana,Oberta
+41,2026-07-17,Ordinador,No s'encén,Alta,Resolta
+42,2026-09-27,Teclat,La pantalla no funciona,Alta,Oberta
+43,2026-10-07,Projector,No s'encén,Mitjana,Resolta
+44,2026-09-18,Portàtil,No s'encén,Alta,Resolta
+45,2026-06-02,Ordinador,La pantalla no funciona,Baixa,Oberta
+46,2026-10-20,Portàtil,El dispositiu funciona lentament,Alta,Oberta
+47,2026-05-28,Projector,Fa sorolls estranys,Baixa,Resolta
+48,2026-09-02,Portàtil,No imprimeix correctament,Mitjana,Resolta
+49,2026-09-14,Projector,Fa sorolls estranys,Alta,En procés
+50,2026-09-17,Teclat,No s'encén,Alta,En procés
+51,2026-06-09,Ordinador,No s'encén,Alta,Resolta
+52,2026-09-20,Portàtil,No s'encén,Alta,Resolta
+53,2026-09-01,Portàtil,Problemes de connexió,Baixa,Oberta
+54,2026-08-10,Ordinador,Problemes de connexió,Baixa,Resolta
+55,2026-08-22,Monitor,Problemes de connexió,Mitjana,En procés
+56,2026-06-18,Monitor,El dispositiu funciona lentament,Alta,Resolta
+57,2026-09-03,Impressora,El dispositiu funciona lentament,Mitjana,En procés
+58,2026-06-01,Impressora,Fa sorolls estranys,Mitjana,Resolta
+59,2026-07-15,Portàtil,Fa sorolls estranys,Baixa,Resolta
+60,2026-06-26,Projector,Problemes de connexió,Alta,En procés
+61,2026-08-31,Impressora,No imprimeix correctament,Alta,Resolta
+62,2026-09-03,Teclat,La pantalla no funciona,Alta,Resolta
+63,2026-06-03,Teclat,Fa sorolls estranys,Baixa,Oberta
+64,2026-08-14,Portàtil,No imprimeix correctament,Baixa,En procés
+65,2026-09-17,Monitor,Fa sorolls estranys,Alta,Resolta
+66,2026-08-01,Monitor,Problemes de connexió,Alta,En procés
+67,2026-09-18,Ordinador,No imprimeix correctament,Mitjana,Oberta
+68,2026-09-16,Teclat,Fa sorolls estranys,Alta,Resolta
+69,2026-09-17,Projector,La pantalla no funciona,Mitjana,Oberta
+70,2026-06-28,Teclat,No imprimeix correctament,Mitjana,Oberta
+71,2026-09-02,Portàtil,La pantalla no funciona,Baixa,En procés
+72,2026-05-04,Projector,Problemes de connexió,Alta,Oberta
+73,2026-06-21,Portàtil,Fa sorolls estranys,Baixa,En procés
+74,2026-09-29,Teclat,Problemes de connexió,Alta,Resolta
+75,2026-06-25,Projector,El dispositiu funciona lentament,Mitjana,Oberta
+76,2026-05-24,Ordinador,No imprimeix correctament,Baixa,En procés
+77,2026-05-21,Monitor,No imprimeix correctament,Alta,En procés
+78,2026-09-24,Monitor,El dispositiu funciona lentament,Mitjana,En procés
+79,2026-05-31,Portàtil,Problemes de connexió,Alta,Resolta
+80,2026-10-19,Portàtil,Problemes de connexió,Mitjana,En procés
+81,2026-06-15,Monitor,Fa sorolls estranys,Alta,Resolta
+82,2026-09-19,Impressora,El dispositiu funciona lentament,Baixa,Resolta
+83,2026-07-30,Teclat,La pantalla no funciona,Baixa,En procés
+84,2026-09-12,Monitor,No s'encén,Baixa,Oberta
+85,2026-08-21,Impressora,La pantalla no funciona,Baixa,En procés
+86,2026-07-29,Monitor,Fa sorolls estranys,Alta,Oberta
+87,2026-09-10,Teclat,Problemes de connexió,Mitjana,Oberta
+88,2026-10-21,Projector,La pantalla no funciona,Baixa,Oberta
+89,2026-09-18,Projector,No imprimeix correctament,Alta,Resolta
+90,2026-05-15,Portàtil,No imprimeix correctament,Mitjana,Oberta
+91,2026-09-07,Teclat,Fa sorolls estranys,Baixa,Resolta
+92,2026-10-26,Ordinador,No imprimeix correctament,Alta,Oberta
+93,2026-07-17,Monitor,No s'encén,Baixa,Resolta
+94,2026-06-08,Monitor,La pantalla no funciona,Mitjana,Oberta
+95,2026-10-17,Impressora,No imprimeix correctament,Baixa,Oberta
+96,2026-05-29,Portàtil,Fa sorolls estranys,Alta,En procés
+97,2026-05-16,Portàtil,La pantalla no funciona,Mitjana,Oberta
+98,2026-09-11,Impressora,No imprimeix correctament,Baixa,Resolta
+99,2026-06-07,Projector,La pantalla no funciona,Alta,Resolta
+100,2026-07-26,Impressora,No imprimeix correctament,Alta,Resolta
