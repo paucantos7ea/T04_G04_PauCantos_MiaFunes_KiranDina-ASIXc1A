@@ -20,7 +20,8 @@ Arquitectura (una responsabilidad por clase):
                         y calcula las métricas una sola vez
     Paginator        -> listados de 10 en 10 con [N] [P] [G] [Q]
     EntradaUsuario   -> todas las lecturas de teclado, ya saneadas
-    CLIInterface     -> dashboard, menús, gráficas y fichas
+    CLIInterface     -> dashboard, menús, gráficas, fichas y exportación
+                        de las válidas a incidencies.json
 
 Uso:
     python filtro_respotes.py ruta\\al\\respotes.xml   -> lee ese XML
@@ -32,6 +33,7 @@ Dependencias:
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sys
@@ -925,6 +927,8 @@ class CLIInterface:
     OP_MARCAS = "◉  Filtrar por marca o categoría de equipo"
     OP_FECHAS = "▣  Filtrar por fechas"
     OP_BUSCAR = "⌕  Buscar por texto o ID"
+    OP_JSON = "💾  Guardar incidencias válidas en JSON"
+    NOMBRE_JSON = "incidencies.json"
     OP_SALIR = "⏻  Salir"
 
     def __init__(self, consola: Console, ruta_inicial: Path | None = None):
@@ -981,6 +985,7 @@ class CLIInterface:
             self.OP_MARCAS: self.ver_marcas,
             self.OP_FECHAS: self.ver_fechas,
             self.OP_BUSCAR: self.buscar,
+            self.OP_JSON: self.guardar_json,
         }
         while True:
             self.consola.clear()
@@ -1407,6 +1412,131 @@ class CLIInterface:
                                self._constructor_busqueda(termino),
                                f"No se ha encontrado «{termino}» en ningún ID ni campo.",
                                {"I": ("Ver ficha por ID", self.inspeccionar_id)})
+
+    # ── Exportación a JSON ─────────────────────────────────────────────────
+
+    def _registros_json(self) -> list[dict[str, str]]:
+        """Cada incidencia válida como {"id": ..., "<camp nom>": "<valor>", ...}.
+
+        Los campos opcionales que venían vacíos (p. ej. la marca) se guardan
+        como "" para que todos los registros tengan las mismas claves.
+        """
+        registros = []
+        for inc in self.datos.validas:
+            registro = {"id": inc.id, **inc.campos}
+            registro.update({nombre: "" for nombre in inc.vacios})
+            registros.append(registro)
+        return registros
+
+    @staticmethod
+    def _escribir_json(ruta: Path, datos: list) -> None:
+        """Escribe primero en un .tmp y después lo renombra.
+
+        Si la escritura falla a mitad, el incidencies.json anterior queda
+        intacto. Los errores (OSError) los gestiona guardar_json().
+        """
+        temporal = ruta.with_name(ruta.name + ".tmp")
+        try:
+            with open(temporal, "w", encoding="utf-8") as fichero:
+                json.dump(datos, fichero, ensure_ascii=False, indent=4)
+            temporal.replace(ruta)
+        except OSError:
+            temporal.unlink(missing_ok=True)    # No dejar un .tmp huérfano
+            raise
+
+    def _leer_json_existente(self, ruta: Path) -> list | None:
+        """Lista guardada en el archivo, o None (con aviso) si no se puede usar."""
+        try:
+            with open(ruta, encoding="utf-8") as fichero:
+                datos = json.load(fichero)
+        except json.JSONDecodeError as error:
+            self.entrada.error(f"El fitxer existent no és un JSON vàlid ({escape(str(error))}).")
+            return None
+        except (OSError, UnicodeDecodeError) as error:
+            self.entrada.error(f"No es pot llegir el fitxer existent ({escape(str(error))}).")
+            return None
+        if not isinstance(datos, list):
+            self.entrada.error("El fitxer existent no conté una llista d'incidències.")
+            return None
+        return datos
+
+    def _exito(self, mensaje: str) -> None:
+        self.consola.print(Text(f"\n✔ {mensaje}", style=f"bold {NEON_VERDE}"))
+
+    def guardar_json(self) -> None:
+        """Exporta las incidencias válidas a incidencies.json, junto al XML.
+
+        * Si no existe, lo crea.
+        * Si existe: sobreescribir, añadir sin duplicar IDs o cancelar.
+        """
+        ruta_json = self.ruta.parent / self.NOMBRE_JSON
+        nuevos = self._registros_json()
+
+        self.consola.clear()
+        self.consola.print(Panel(
+            Text.assemble(("Ruta destí: ", "dim"), (str(ruta_json), "bold"),
+                          ("\nIncidències vàlides a exportar: ", "dim"),
+                          (str(len(nuevos)), f"bold {NEON_VERDE}")),
+            title=f"[bold {NEON_VERDE}]💾 Exportació a JSON[/]",
+            border_style=NEON_VERDE, box=box.ROUNDED))
+
+        if not nuevos:
+            self.entrada.error("No hi ha incidències vàlides per exportar.")
+            self.entrada.pausa()
+            return
+
+        try:
+            if not ruta_json.exists():
+                self._escribir_json(ruta_json, nuevos)
+                self._exito(f"Fitxer {self.NOMBRE_JSON} creat amb {len(nuevos)} incidències.")
+            else:
+                self._actualizar_json_existente(ruta_json, nuevos)
+        except OSError as error:   # Sin permisos, disco lleno, ruta bloqueada...
+            self.panel_error("No s'ha pogut desar el JSON", f"{type(error).__name__}: {error}")
+        self.entrada.pausa()
+
+    def _actualizar_json_existente(self, ruta_json: Path, nuevos: list[dict[str, str]]) -> None:
+        self.consola.print(f"[{NEON_AMARILLO}]⚠ El fitxer '{self.NOMBRE_JSON}' ja existeix.[/]\n")
+        sobreescribir = "Sobreescriure'l (esborra el contingut anterior)"
+        anadir = "Afegir les noves incidències (evita duplicats per ID)"
+        cancelar = "↩  Cancel·lar"
+        opcion = self.entrada.seleccionar("Què vols fer amb el fitxer existent?",
+                                          [sobreescribir, anadir, cancelar])
+
+        if opcion == cancelar:
+            self.consola.print("[dim]Operació cancel·lada. No s'ha modificat res.[/]")
+            return
+
+        if opcion == sobreescribir:
+            self._escribir_json(ruta_json, nuevos)
+            self._exito(f"Fitxer sobreescrit correctament amb {len(nuevos)} incidències.")
+            return
+
+        # ── Añadir: se fusiona con lo que ya hay ───────────────────────────
+        existentes = self._leer_json_existente(ruta_json)
+        if existentes is None:
+            # No se puede fusionar sin perder datos: se pregunta, no se borra en silencio
+            forzar = "Sobreescriure'l igualment"
+            no_tocar = "↩  Cancel·lar (no tocar el fitxer)"
+            if self.entrada.seleccionar("No es pot afegir sobre aquest fitxer. Què vols fer?",
+                                        [forzar, no_tocar]) == forzar:
+                self._escribir_json(ruta_json, nuevos)
+                self._exito(f"Fitxer sobreescrit amb {len(nuevos)} incidències.")
+            else:
+                self.consola.print("[dim]Operació cancel·lada. No s'ha modificat res.[/]")
+            return
+
+        ids_existentes = {str(item.get("id")) for item in existentes if isinstance(item, dict)}
+        anadidas = 0
+        for registro in nuevos:
+            if str(registro["id"]) not in ids_existentes:
+                existentes.append(registro)
+                ids_existentes.add(str(registro["id"]))
+                anadidas += 1
+
+        self._escribir_json(ruta_json, existentes)
+        self._exito(f"Procés completat: s'han afegit {anadidas} noves incidències "
+                    f"({len(nuevos) - anadidas} ja hi eren). Total al fitxer: {len(existentes)}.")
 
 
 # ══════════════════════════════════════════════════════════════════════════
