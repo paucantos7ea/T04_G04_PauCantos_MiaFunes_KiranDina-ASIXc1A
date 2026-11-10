@@ -1,258 +1,114 @@
-
-import xml.etree.ElementTree as ET
-from collections import Counter
-from datetime import datetime
-import unicodedata
+import json
 import os
 
-# ==========================================
-# CONFIGURACIÓN
-# ==========================================
-
-ARCHIVO_XML = "incidencies.xml"
 
 
-# ==========================================
-# FUNCIONES AUXILIARES
-# ==========================================
 
-def normalizar(texto):
-    """Pasa el texto a minúsculas y elimina acentos."""
-    texto = str(texto).strip().lower()
-    texto = unicodedata.normalize("NFD", texto)
-    return "".join(
-        c for c in texto
-        if unicodedata.category(c) != "Mn"
-    )
+def desar_incidencies_json(noves_incidencies, ruta_fitxer="incidencies.json"):
+    """Dematxa i emmagatzema una llista d'incidències en un fitxer JSON
 
 
-def buscar_campo(incidencia, nombres):
-    """Busca un campo aunque tenga un nombre parecido."""
-    for campo, valor in incidencia.items():
-        if normalizar(campo) in nombres:
-            return valor.strip()
-    return ""
+    gestionant l'existència prèvia del fitxer i evitant duplicats per ID.
+    """
+    # Si el fitxer no existeix, es crea directament amb les noves incidències
+    if not os.path.exists(ruta_fitxer):
+        print(f"El fitxer '{ruta_fitxer}' no existeix. Creant-lo de nou...")
+        dades_a_desar = noves_incidencies
 
 
-# ==========================================
-# 1. LEER EL ARCHIVO XML
-# ==========================================
+    else:
+        # Si existeix, es demana a l'usuari quina acció vol realitzar
+        print(f"\nEl fitxer '{ruta_fitxer}' ja existeix.")
+        print("1. Sobreescriure'l (esborra el contingut anterior)")
+        print("2. Afegir les noves incidències (evitant duplicats per ID)")
 
-def leer_xml():
-    if not os.path.exists(ARCHIVO_XML):
-        print("ERROR: No se encuentra incidencies.xml")
-        return []
 
+        opcio = ""
+        while opcio not in ["1", "2"]:
+            opcio = input("Tria una opció (1 o 2): ").strip()
+
+
+        if opcio == "1":
+            # Opció 1: Sobreescriure
+            dades_a_desar = noves_incidencies
+            print("S'ha triat sobreescriure el fitxer.")
+
+
+        elif opcio == "2":
+            # Opció 2: Carregar dades existents i afegir sense duplicats
+            try:
+                with open(ruta_fitxer, "r", encoding="utf-8") as f:
+                    dades_existents = json.load(f)
+                    # Si el fitxer no conté una llista vàlida, s'inicialitza buit
+                    if not isinstance(dades_existents, list):
+                        dades_existents = []
+            except (json.JSONDecodeError, FileNotFoundError):
+                # Si el fitxer està buit o corrupte, es comença de zero
+                dades_existents = []
+
+
+            # Obtenim el conjunt (set) d'IDs ja existents per a una cerca ràpida O(1)
+            ids_existents = {
+                incidencia.get("id")
+                for incidencia in dades_existents
+                if "id" in incidencia
+            }
+
+
+            # Filtrem les noves incidències per afegir només les que no tenen l'ID repetit
+            incidencies_afegides = 0
+            for inc in noves_incidencies:
+                inc_id = inc.get("id")
+                if inc_id not in ids_existents:
+                    dades_existents.append(inc)
+                    ids_existents.add(inc_id)
+                    incidencies_afegides += 1
+
+
+            dades_a_desar = dades_existents
+            print(
+                f"S'han afegit {incidencies_afegides} noves incidències sense duplicats."
+            )
+
+
+    # Escriptura final de les dades en el fitxer JSON
     try:
-        arbol = ET.parse(ARCHIVO_XML)
-        raiz = arbol.getroot()
-
-        incidencias = []
-
-        for elemento in raiz.iter():
-            campos = {}
-
-            for hijo in elemento:
-                # Solo recogemos campos de texto directos
-                if len(hijo) == 0 and hijo.text:
-                    etiqueta = hijo.tag.split("}")[-1]
-                    campos[etiqueta] = hijo.text.strip()
-
-            if len(campos) >= 2:
-                incidencias.append(campos)
-
-        return incidencias
-
-    except ET.ParseError as error:
-        print("ERROR al leer el XML:", error)
-        return []
-
-
-# ==========================================
-# 2. VALIDAR Y FILTRAR INCIDENCIAS
-# ==========================================
-
-def validar_incidencias(incidencias):
-    validas = []
-    descartadas = []
-    ids = set()
-
-    campos_id = {"id", "identificador", "idincidencia",
-                 "codigo", "codigoincidencia"}
-
-    campos_fecha = {"fecha", "fechacreacion",
-                    "fechaincidencia", "fechaalta"}
-
-    for incidencia in incidencias:
-
-        identificador = buscar_campo(incidencia, campos_id)
-        fecha = buscar_campo(incidencia, campos_fecha)
-
-        # Comprobar que tenga identificador
-        if not identificador:
-            descartadas.append((incidencia, "Falta el ID"))
-            continue
-
-        # Comprobar duplicados
-        if identificador in ids:
-            descartadas.append((incidencia, "ID duplicado"))
-            continue
-
-        # Comprobar fecha, si existe ese campo
-        if fecha:
-            fecha_valida = False
-
-            formatos = [
-                "%Y-%m-%d",
-                "%d/%m/%Y",
-                "%d-%m-%Y",
-                "%Y/%m/%d"
-            ]
-
-            for formato in formatos:
-                try:
-                    fecha_obj = datetime.strptime(fecha, formato)
-
-                    if 2000 <= fecha_obj.year <= datetime.now().year:
-                        fecha_valida = True
-                        break
-                except ValueError:
-                    pass
-
-            if not fecha_valida:
-                descartadas.append(
-                    (incidencia, "Fecha incorrecta")
-                )
-                continue
-
-        ids.add(identificador)
-        validas.append(incidencia)
-
-    return validas, descartadas
-
-
-# ==========================================
-# 3. CALCULAR ESTADÍSTICAS
-# ==========================================
-
-def obtener_estadisticas(incidencias):
-
-    estados = Counter()
-    dispositivos = Counter()
-    prioridades = Counter()
-    departamentos = Counter()
-
-    for incidencia in incidencias:
-
-        estado = buscar_campo(
-            incidencia,
-            {"estado", "situacion"}
+        with open(ruta_fitxer, "w", encoding="utf-8") as f:
+            json.dump(dades_a_desar, f, ensure_ascii=False, indent=4)
+        print(
+            f"La informació s'ha emmagatzemat correctament a '{ruta_fitxer}'."
         )
+    except Exception as e:
+        print(f"Error en desar el fitxer: {e}")
 
-        dispositivo = buscar_campo(
-            incidencia,
-            {"dispositivo", "equipo", "tipoequipo",
-             "tipodispositivo"}
-        )
 
-        prioridad = buscar_campo(
-            incidencia,
-            {"prioridad", "urgencia"}
-        )
-
-        departamento = buscar_campo(
-            incidencia,
-            {"departamento", "seccion", "area"}
-        )
-
-        if estado:
-            estados[estado] += 1
-
-        if dispositivo:
-            dispositivos[dispositivo] += 1
-
-        if prioridad:
-            prioridades[prioridad] += 1
-
-        if departamento:
-            departamentos[departamento] += 1
-
-    return estados, dispositivos, prioridades, departamentos
 
 
 # ==========================================
-# 4. MOSTRAR RESULTADOS
+# Exemple d'ús / Prova de funcionament
 # ==========================================
-
-def mostrar_estadisticas(titulo, estadisticas):
-
-    print("\n" + titulo)
-    print("-" * 40)
-
-    if not estadisticas:
-        print("No hay datos disponibles.")
-        return
-
-    for nombre, cantidad in estadisticas.most_common():
-        print(f"{nombre:<25} {cantidad:>5}")
-
-
-def mostrar_informe(validas, descartadas):
-
-    print("\n")
-    print("=" * 50)
-    print("          INFORME DE INCIDENCIAS")
-    print("=" * 50)
-
-    print(f"\nTotal de incidencias leídas: {len(validas) + len(descartadas)}")
-    print(f"Incidencias válidas:         {len(validas)}")
-    print(f"Incidencias descartadas:     {len(descartadas)}")
-
-    estados, dispositivos, prioridades, departamentos = (
-        obtener_estadisticas(validas)
-    )
-
-    mostrar_estadisticas("ESTADÍSTICAS POR ESTADO", estados)
-
-    mostrar_estadisticas("ESTADÍSTICAS POR DISPOSITIVO", dispositivos)
-
-    mostrar_estadisticas("ESTADÍSTICAS POR PRIORIDAD", prioridades)
-
-    mostrar_estadisticas("ESTADÍSTICAS POR DEPARTAMENTO", departamentos)
-
-    if dispositivos:
-        print("\nDISPOSITIVO CON MÁS INCIDENCIAS")
-        print("-" * 40)
-        print(dispositivos.most_common(1)[0][0])
-
-    print("\n" + "=" * 50)
-    print("             FIN DEL INFORME")
-    print("=" * 50)
-
-
-# ==========================================
-# PROGRAMA PRINCIPAL
-# ==========================================
-
-def main():
-
-    print("Leyendo archivo XML...")
-
-    incidencias = leer_xml()
-
-    if not incidencias:
-        print("No se han encontrado incidencias.")
-        return
-
-    validas, descartadas = validar_incidencias(incidencias)
-
-    mostrar_informe(validas, descartadas)
-
-    if descartadas:
-        print("\nINCIDENCIAS DESCARTADAS:")
-        for incidencia, motivo in descartadas:
-            print(f"- {motivo}")
-
-
 if __name__ == "__main__":
-    main()
+    # Dades de prova (suposant que cada incidència té un camp 'id')
+    incidencies_noves_exemple = [
+        {
+            "id": 101,
+            "títol": "Error de connexió",
+            "estat": "Oberta",
+            "prioritat": "Alta",
+        },
+        {
+            "id": 102,
+            "títol": "Falta de memòria a servidor",
+            "estat": "Pendent",
+            "prioritat": "Mitjana",
+        },
+        {
+            "id": 103,
+            "títol": "Falla impressora planta 2",
+            "estat": "Oberta",
+            "prioritat": "Baixa",
+        },
+    ]
+
+
+    desar_incidencies_json(incidencies_noves_exemple)
