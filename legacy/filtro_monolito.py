@@ -78,6 +78,26 @@ TOP_EQUIPOS = 10                      # Equipos en la gráfica
 # Ejemplo: CAMPOS_OBLIGATORIOS = ["Data", "Equip", "Descripció"]
 CAMPOS_OBLIGATORIOS: list[str] = []
 
+# Estructura EXACTA que debe tener el XML (la de incidencies.xml). Si el
+# archivo no la cumple se rechaza entero, antes de analizar nada.
+ETIQUETA_RAIZ = "incidencies"
+CAMPOS_ESPERADOS: list[str] = [
+    "Marca de temps",
+    "Informació relativa sobre la protecció de dades",
+    "Data d'incidència",
+    "En quina zona de l'empresa es troba l'equip?",
+    "Quin departament ha detectat la incidència",
+    "Quin equip presenta l'incidència?",
+    "Quin codi d'identificació té l'equip?",
+    "Descripció del problema",
+    "Marca d'equip",
+    "Amb quina freqüència passa el problema?",
+    "Quantes persones estan afectades pel problema?",
+    "S'ha provat de reiniciar l'equip? (Si el problema es amb l'ordinador)",
+    "En quin horari es pot revisar o reparar l'equip?",
+]
+MAX_ERRORES_ESTRUCTURA = 10           # Errores que se enseñan al rechazar
+
 # Campos OPCIONALES: si vienen vacíos (<camp nom="Marca d'equip"/>) NO se
 # rechaza la incidencia; la marca se deduce por REGEX o queda "sin marca".
 RE_CAMPO_OPCIONAL = re.compile(r"marca|fabricant|brand|model", re.I)
@@ -424,21 +444,50 @@ class XMLParser:
     ETIQUETA_CAMPO = "camp"
 
     def cargar(self, ruta: Path) -> tuple[str, list[Incidencia]]:
-        """Devuelve (etiqueta_raíz, incidencias) o lanza ErrorCarga."""
+        """Devuelve (etiqueta_raíz, incidencias) o lanza ErrorCarga.
+
+        Además de exigir un XML bien formado, valida la ESTRUCTURA:
+            <incidencies>                       <- raíz exacta
+                <incidencia id="...">           <- solo esto bajo la raíz
+                    <camp nom="...">texto</camp>  <- solo esto, sin subetiquetas,
+                    ...                              los CAMPOS_ESPERADOS, 1 vez cada uno
+        Si algo no encaja se rechaza el archivo completo.
+        """
         if not ruta.exists():
             raise ErrorCarga("Archivo no encontrado", f"No existe el archivo:\n{ruta}")
         if not ruta.is_file():
             raise ErrorCarga("Ruta no válida", f"La ruta no es un archivo:\n{ruta}")
+        if ruta.suffix.lower() != ".xml":
+            raise ErrorCarga("Extensión no válida", f"El archivo debe ser .xml:\n{ruta}")
 
         raiz = ""
+        profundidad = 0
         incidencias: list[Incidencia] = []
+        errores: list[str] = []
         try:
             for evento, elem in ET.iterparse(str(ruta), events=("start", "end")):
                 if evento == "start":
-                    raiz = raiz or elem.tag          # La primera etiqueta es la raíz
-                elif elem.tag == self.ETIQUETA_INCIDENCIA:
-                    incidencias.append(self._convertir(elem, len(incidencias) + 1))
+                    profundidad += 1
+                    if profundidad == 1:
+                        raiz = elem.tag
+                        if raiz != ETIQUETA_RAIZ:
+                            raise ErrorCarga(
+                                "Estructura incorrecta",
+                                f"La raíz es <{raiz}>, debe ser <{ETIQUETA_RAIZ}>.")
+                    elif profundidad == 2 and elem.tag != self.ETIQUETA_INCIDENCIA:
+                        errores.append(f"<{elem.tag}> dentro de <{raiz}>: "
+                                       f"solo se admite <{self.ETIQUETA_INCIDENCIA}>.")
+                    continue
+
+                # evento == "end"
+                profundidad -= 1
+                if profundidad == 1 and elem.tag == self.ETIQUETA_INCIDENCIA:
+                    posicion = len(incidencias) + 1
+                    errores.extend(self._errores_estructura(elem, posicion))
+                    incidencias.append(self._convertir(elem, posicion))
                     elem.clear()                     # Libera memoria
+                if len(errores) > MAX_ERRORES_ESTRUCTURA:
+                    break                            # Ya es seguro que se rechaza
         except FileNotFoundError:
             raise ErrorCarga("Archivo no encontrado", f"No existe el archivo:\n{ruta}") from None
         except PermissionError:
@@ -449,13 +498,61 @@ class XMLParser:
         except (OSError, UnicodeDecodeError, ValueError) as error:
             raise ErrorCarga("Error de lectura", f"No se puede leer el archivo.\n{error}") from None
 
+        if errores:
+            lista = "\n".join(f"• {e}" for e in errores[:MAX_ERRORES_ESTRUCTURA])
+            if len(errores) > MAX_ERRORES_ESTRUCTURA:
+                lista += "\n• ..."
+            raise ErrorCarga("Estructura incorrecta",
+                             f"El XML no tiene la estructura esperada:\n{lista}")
         return raiz, incidencias
+
+    @staticmethod
+    def _clave_campo(nombre: str) -> str:
+        """Nombre comparable: sin tildes/mayúsculas/espacios y apóstrofo recto."""
+        return normalizar(nombre.replace("\u2019", "'"))
+
+    def _errores_estructura(self, nodo: ET.Element, posicion: int) -> list[str]:
+        """Lista de fallos de estructura de una <incidencia> (vacía si está bien)."""
+        errores: list[str] = []
+        id_xml = (nodo.get("id") or "").strip()
+        donde = f'<incidencia id="{id_xml}">' if id_xml else f"<incidencia> nº {posicion}"
+
+        if not id_xml:
+            errores.append(f"{donde}: falta el atributo id.")
+        if (nodo.text or "").strip():
+            errores.append(f"{donde}: tiene texto suelto fuera de <{self.ETIQUETA_CAMPO}>.")
+
+        esperados = {self._clave_campo(c): c for c in CAMPOS_ESPERADOS}
+        vistos: Counter[str] = Counter()
+        for hijo in nodo:
+            if (hijo.tail or "").strip():
+                errores.append(f"{donde}: tiene texto suelto fuera de <{self.ETIQUETA_CAMPO}>.")
+            if hijo.tag != self.ETIQUETA_CAMPO:
+                errores.append(f"{donde}: etiqueta <{hijo.tag}> no permitida.")
+                continue
+            nombre = (hijo.get("nom") or "").strip()
+            if not nombre:
+                errores.append(f"{donde}: <{self.ETIQUETA_CAMPO}> sin atributo nom.")
+                continue
+            if len(hijo):
+                errores.append(f'{donde}: <camp nom="{nombre}"> contiene subetiquetas.')
+            clave = self._clave_campo(nombre)
+            if clave not in esperados:
+                errores.append(f'{donde}: campo desconocido «{nombre}».')
+            vistos[clave] += 1
+
+        for clave, original in esperados.items():
+            if vistos[clave] == 0:
+                errores.append(f"{donde}: falta el campo «{original}».")
+            elif vistos[clave] > 1:
+                errores.append(f"{donde}: el campo «{original}» está repetido.")
+        return errores
 
     def _convertir(self, nodo: ET.Element, posicion: int) -> Incidencia:
         id_xml = (nodo.get("id") or "").strip()          # .get() con fallback
         inc = Incidencia(id=id_xml or f"SIN-ID-{posicion}", sin_id=not id_xml)
 
-        for camp in nodo.iter(self.ETIQUETA_CAMPO):
+        for camp in nodo.findall(self.ETIQUETA_CAMPO):   # Solo hijos directos
             nombre = (camp.get("nom") or "").strip() or "(sin nombre)"
             valor = texto_seguro(camp)
 
@@ -968,9 +1065,6 @@ class CLIInterface:
                     ruta = None
                 continue
 
-            if raiz != "incidencies":
-                self.consola.print(f"[{NEON_AMARILLO}]⚠ La raíz es <{escape(raiz)}>, "
-                                   f"se esperaba <incidencies>.[/]")
             self.ruta, self.datos = ruta, datos
             return True
 
