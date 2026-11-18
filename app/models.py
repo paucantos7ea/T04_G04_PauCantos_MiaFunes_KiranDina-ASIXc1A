@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 
-from app.config import CATEGORIA_POR_DEFECTO, SEVERIDAD_POR_DEFECTO
+from app.config import CATEGORIA_POR_DEFECTO, SEVERIDAD_POR_DEFECTO, TIPO_ANOMALIA
 
 
 @dataclass
@@ -19,6 +19,24 @@ class Anomalia:
     campo: str = "—"        # Dónde se ha detectado
     valor: str = ""         # Contenido corrupto extraído
     extra: str = ""         # Pista adicional (p. ej. binario decodificado)
+    motivo: str = ""        # Explicación detallada del rechazo (auditoría)
+
+    @property
+    def tipo(self) -> str:
+        """Nombre corto: 'Fecha imposible', 'Campo vacío', 'Spam / Contenido basura'..."""
+        return TIPO_ANOMALIA.get(self.categoria, self.categoria)
+
+    @property
+    def motivo_detallado(self) -> str:
+        return self.motivo or self.regla
+
+
+@dataclass
+class Paso:
+    """Un paso legible de la traza de decisión del motor (auditoría)."""
+    etapa: str              # "Validación", "Equipo", "Categoría", "Marca", "Severidad"
+    texto: str
+    estado: str = "info"    # "ok" | "bloqueo" | "aviso" | "info"
 
 
 @dataclass
@@ -37,10 +55,22 @@ class Incidencia:
     marca: str | None = None
     severidad: str = SEVERIDAD_POR_DEFECTO
     severidad_inferida: bool = True
+    # Trazabilidad: POR QUÉ se ha clasificado así (lo rellena el validator)
+    campo_equipo: str = ""          # Campo del XML del que sale `equipo`
+    origen_tipo: str = ""           # Cómo se ha decidido la categoría
+    origen_marca: str = ""          # Cómo se ha decidido la marca
+    criterio_severidad: str = ""    # Paso del motor: "Paso 4 · El equipo no arranca"
+    regla_severidad: str = ""       # Disparador exacto: 'Palabra clave: "no arrenca"'
+    traza: list[Paso] = field(default_factory=list)
 
     @property
     def valida(self) -> bool:
         return not self.anomalias
+
+    @property
+    def anomalia_principal(self) -> Anomalia | None:
+        """Primera regla que bloqueó la incidencia (orden de detección)."""
+        return self.anomalias[0] if self.anomalias else None
 
     def categorias(self) -> set[str]:
         """Categorías de anomalía en las que cae esta incidencia."""

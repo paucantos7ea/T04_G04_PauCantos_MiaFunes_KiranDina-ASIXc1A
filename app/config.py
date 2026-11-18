@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 # ══════════════════════════════════════════════════════════════════════════
 # Archivos y rutas
@@ -236,6 +237,37 @@ RE_SEV_MEDIA = re.compile(
     r"segunda pantalla|programa|aplicacio|software|actualitz|actualiz|contrasenya|"
     r"password|reinici|intermitent|sense connexio|sin conexion|wifi")
 
+
+class ReglaSeveridad(NamedTuple):
+    """Un paso del motor de severidad (la primera regla que encaja decide)."""
+    paso: int
+    nivel: str
+    titulo: str
+    descripcion: str
+    patron: re.Pattern[str]
+
+
+# Orden EXACTO de decisión. Comprobar "periférico" antes que "no arranca"
+# equivale a "no arranca -> Alta solo si NO es periférico".
+REGLAS_SEVERIDAD: list[ReglaSeveridad] = [
+    ReglaSeveridad(1, "Crítica", "Servidores y red general",
+                   "Caída de servicios compartidos: afecta a muchos usuarios a la vez.",
+                   RE_SEV_CRITICA),
+    ReglaSeveridad(2, "Alta", "Hardware crítico del equipo",
+                   "Avería física o de seguridad que deja el equipo inutilizable o en riesgo.",
+                   RE_SEV_ALTA_HW),
+    ReglaSeveridad(3, "Leve", "Periféricos y consumibles",
+                   "Teclado, ratón, cables, impresora...: molesto pero con alternativa fácil. "
+                   "Se comprueba ANTES que «no arranca»: «no arrenca la impressora» es Leve.",
+                   RE_SEV_LEVE),
+    ReglaSeveridad(4, "Alta", "El equipo no arranca",
+                   "El ordenador no enciende o se queda en negro (si no es un periférico).",
+                   RE_SEV_ALTA_ARRANQUE),
+    ReglaSeveridad(5, "Media", "Software o error genérico",
+                   "Programas, contraseñas, lentitud, cortes intermitentes, «no funciona»...",
+                   RE_SEV_MEDIA),
+]
+
 # ══════════════════════════════════════════════════════════════════════════
 # Categorías de anomalía (opciones del filtro)
 # ══════════════════════════════════════════════════════════════════════════
@@ -245,6 +277,14 @@ CAT_BASURA = "Contenido basura"
 CAT_DESBORDE = "Desbordamiento de texto"
 CAT_VACIO = "Campos vacíos / incompletos"
 CATEGORIAS = [CAT_FECHA, CAT_BASURA, CAT_DESBORDE, CAT_VACIO]
+
+# Nombre corto de cada tipo de anomalía (gráficos y fichas de auditoría)
+TIPO_ANOMALIA: dict[str, str] = {
+    CAT_FECHA: "Fecha imposible",
+    CAT_VACIO: "Campo vacío",
+    CAT_BASURA: "Spam / Contenido basura",
+    CAT_DESBORDE: "Desbordamiento",
+}
 
 # ══════════════════════════════════════════════════════════════════════════
 # Fechas escritas por el usuario y nombres de meses

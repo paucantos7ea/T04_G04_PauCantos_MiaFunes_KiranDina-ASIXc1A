@@ -50,12 +50,19 @@ def valor_real(valor: str | None) -> str:
     return "" if normalizar(limpio) in VALORES_NULOS else limpio
 
 
+def canonico_con_pista(texto_normalizado: str,
+                       tabla: list[tuple[str, re.Pattern[str]]]) -> tuple[str, str] | None:
+    """(nombre, fragmento que lo ha disparado) del primer patrón de `tabla` que encaja."""
+    for nombre, patron in tabla:
+        if coincidencia := patron.search(texto_normalizado):
+            return nombre, coincidencia.group(0)
+    return None
+
+
 def canonico(texto_normalizado: str, tabla: list[tuple[str, re.Pattern[str]]]) -> str | None:
     """Primer nombre de `tabla` cuyo patrón aparece en el texto."""
-    for nombre, patron in tabla:
-        if patron.search(texto_normalizado):
-            return nombre
-    return None
+    encontrado = canonico_con_pista(texto_normalizado, tabla)
+    return encontrado[0] if encontrado else None
 
 
 def parsear_fecha_usuario(texto: str) -> date | None:

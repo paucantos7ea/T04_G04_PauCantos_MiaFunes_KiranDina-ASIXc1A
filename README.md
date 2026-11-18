@@ -1,13 +1,14 @@
 # Escáner de incidencias XML
 
-Aplicación de terminal que analiza un XML de incidencias (`respotes.xml` / `incidencies.xml`), separa los registros válidos de los anómalos, explica por qué se ha rechazado cada uno y permite explorarlos con filtros, gráficas y exportación a JSON.
+Aplicación de terminal **y web** que analiza un XML de incidencias (`respotes.xml` / `incidencies.xml`), separa los registros válidos de los anómalos, explica por qué se ha rechazado cada uno y permite explorarlos con filtros, gráficas y exportación a JSON.
 
 Funciona igual en **Windows, Linux y macOS** y se puede lanzar desde cualquier carpeta.
 
 ## Requisitos
 
 - Python 3.9 o superior
-- Las librerías de `requirements.txt` (`rich`, `questionary`)
+- Las librerías de `requirements.txt` (`rich`, `questionary` y, para la interfaz web, `streamlit` y `plotly`)
+- La interfaz web necesita Python 3.10 o superior (requisito de Streamlit)
 
 ## Instalación
 
@@ -79,12 +80,47 @@ En Windows puedes usar `py` en lugar de `python`; en Linux/macOS, `python3`.
 | Media | Software y errores genéricos |
 | Leve | Periféricos: teclado, ratón, cables, altavoces, impresora |
 
-Las palabras clave y expresiones regulares se ajustan en `app/config.py`.
+Las palabras clave y expresiones regulares se ajustan en `app/config.py` (`REGLAS_SEVERIDAD` fija el orden de decisión).
+
+## Interfaz web en tiempo real (Chrome en PC y móvil)
+
+```bash
+python main.py --web                       # busca respotes.xml / incidencies.xml
+python main.py --web -f datos/respotes.xml # XML concreto
+python main.py --web --port 8502           # otro puerto (si 8501 está ocupado se busca uno libre)
+```
+
+La consola muestra las URLs exactas para abrir en Chrome:
+
+```
+💻 PC (este equipo)       http://localhost:8501
+📱 Móvil (misma Wi-Fi)    http://192.168.1.20:8501
+```
+
+También se puede lanzar directamente con Streamlit desde la carpeta del proyecto:
+
+```bash
+streamlit run web.py --server.address 0.0.0.0
+streamlit run web.py --server.address 0.0.0.0 -- --file ruta/al/respotes.xml
+```
+
+**Qué ofrece**
+
+- **En vivo**: comprueba el XML cada 2 s (fecha de modificación y tamaño). Al guardar o añadir `<incidencia>`, métricas, gráficos y tablas se actualizan solos, sin perder los filtros, y aparece un aviso con las incidencias nuevas. La insignia de la cabecera muestra `🟢 En vivo · Última lectura: HH:MM:SS`.
+- **A prueba de guardados a medias**: si el XML se está escribiendo y no se puede leer, se mantiene el último estado válido (`🟡 Reintentando lectura`) y se reintenta en el siguiente ciclo.
+- **Panel**: KPIs (procesadas, válidas %, bloqueadas %, críticas/altas), anillo de validez vs anomalías, evolución temporal por día/semana/mes, top equipos y categorías, y distribución por severidad.
+- **Filtros táctiles**: búsqueda libre (`#42` = ID exacto), estado, severidad, tipo de anomalía, categoría, marca y rango de fechas.
+- **🔍 Cómo se categoriza (Auditoría y Reglas)**: mapa de las reglas activas (generado desde `app/config.py`) y un inspector por ID que explica, paso a paso, por qué cada incidencia se validó o rechazó y qué palabra clave fijó su severidad.
+- **Menú lateral** (☰): subir otro XML a mano (útil desde el móvil), pausar la actualización en vivo y ver la URL para el móvil.
+
+**Si el móvil no conecta**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez). Para acceder desde fuera de la red local usa un túnel, p. ej. `cloudflared tunnel --url http://localhost:8501`.
 
 ## Estructura
 
 ```
-main.py              Punto de entrada CLI (argparse + bucle protegido)
+main.py              Punto de entrada CLI (argparse + bucle protegido, --web)
+web.py               Interfaz web Streamlit + Plotly (solo presentación)
+.streamlit/          Configuración de Streamlit (sin telemetría, modo headless)
 app/
   config.py          Constantes, colores, palabras clave y regex
   models.py          Incidencia, Anomalia, EstadisticasResumen

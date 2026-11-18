@@ -1,0 +1,10 @@
+# Configuración para `streamlit run web.py` lanzado desde la carpeta del proyecto.
+# (`python main.py --web` pasa estas mismas opciones por línea de comandos.)
+[server]
+headless = true              # No pide email ni intenta abrir un navegador en el servidor
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#3e63dd"

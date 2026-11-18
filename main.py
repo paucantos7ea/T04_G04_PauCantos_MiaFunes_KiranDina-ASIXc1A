@@ -7,6 +7,12 @@ Uso (desde cualquier carpeta y en cualquier sistema operativo):
     python main.py                          # busca respotes.xml / incidencies.xml
     python main.py --file ruta/al/archivo.xml
     python ruta/al/proyecto/main.py -f datos.xml
+    python main.py --web                    # interfaz web (Chrome en PC y móvil)
+    python main.py --web --port 8502 -f datos.xml
+
+La interfaz web también se puede lanzar directamente con Streamlit:
+
+    streamlit run web.py --server.address 0.0.0.0
 
 Búsqueda automática del XML si no se pasa --file:
     1. Directorio actual desde el que se lanza el comando (Path.cwd()).
@@ -19,6 +25,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
+import socket
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -31,11 +40,13 @@ if str(RAIZ_PROYECTO) not in sys.path:
     sys.path.insert(0, str(RAIZ_PROYECTO))
 
 DEPENDENCIAS = ("rich", "questionary")
+DEPENDENCIAS_WEB = ("rich", "streamlit", "plotly")
+PUERTO_WEB = 8501
 
 
-def dependencias_ok() -> bool:
+def dependencias_ok(modulos: tuple[str, ...] = DEPENDENCIAS) -> bool:
     """Comprueba las librerías antes de importarlas (mensaje claro, sin traceback)."""
-    faltan = [m for m in DEPENDENCIAS if importlib.util.find_spec(m) is None]
+    faltan = [m for m in modulos if importlib.util.find_spec(m) is None]
     if faltan:
         requisitos = RAIZ_PROYECTO / "requirements.txt"
         print(f"Faltan dependencias: {', '.join(faltan)}\n"
@@ -53,7 +64,96 @@ def crear_parser() -> argparse.ArgumentParser:
                "actual y en la carpeta del proyecto.")
     parser.add_argument("-f", "--file", metavar="RUTA",
                         help="ruta al archivo XML (relativa al directorio actual o absoluta)")
+    parser.add_argument("--web", action="store_true",
+                        help="abre la interfaz web en tiempo real (Streamlit) en lugar del "
+                             "menú de terminal")
+    parser.add_argument("--port", type=int, default=PUERTO_WEB, metavar="N",
+                        help=f"puerto de la interfaz web (por defecto {PUERTO_WEB})")
     return parser
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Interfaz web (--web)
+# ══════════════════════════════════════════════════════════════════════════
+
+def ip_local() -> str:
+    """IP de esta máquina en la red local (la que usará el móvil).
+
+    Conectar un socket UDP no envía ningún paquete: solo pide al sistema qué
+    interfaz usaría para salir, y de ella se lee la IP.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))
+            ip = sock.getsockname()[0]
+            if not ip.startswith("127."):
+                return ip
+    except OSError:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return "127.0.0.1"
+
+
+def puerto_libre(desde: int, intentos: int = 20) -> int:
+    """Primer puerto libre a partir de `desde` (por si 8501 ya está ocupado)."""
+    for puerto in range(desde, desde + intentos):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("0.0.0.0", puerto))
+                return puerto
+            except OSError:
+                continue
+    return desde
+
+
+def lanzar_web(args: argparse.Namespace) -> int:
+    """Arranca `streamlit run web.py` escuchando en toda la red local."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from app.ui.console import obtener_consola, panel_error
+    from app.utils import limpiar_ruta
+
+    consola = obtener_consola()
+    web = RAIZ_PROYECTO / "web.py"
+    if not web.is_file():
+        consola.print(panel_error("Falta web.py", f"No se encuentra:\n{web}"))
+        return 1
+
+    puerto = puerto_libre(args.port)
+    ip = ip_local()
+    texto = Text()
+    texto.append("Abre en Google Chrome:\n\n", style="bold")
+    texto.append("  💻 PC (este equipo)       ", style="dim")
+    texto.append(f"http://localhost:{puerto}\n", style="bold cyan underline")
+    texto.append("  📱 Móvil (misma Wi-Fi)    ", style="dim")
+    texto.append(f"http://{ip}:{puerto}\n\n", style="bold green underline")
+    if puerto != args.port:
+        texto.append(f"El puerto {args.port} estaba ocupado: se usa el {puerto}.\n", style="yellow")
+    if ip == "127.0.0.1":
+        texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
+                     style="yellow")
+    texto.append("Fuera de tu red: usa un túnel, p. ej. ", style="dim")
+    texto.append(f"cloudflared tunnel --url http://localhost:{puerto}\n", style="dim italic")
+    texto.append("Ctrl+C detiene el servidor.", style="dim")
+    consola.print(Panel(texto, title="[bold]🌐 Monitor web de incidencias[/]",
+                        border_style="cyan", expand=False, padding=(1, 2)))
+
+    comando = [sys.executable, "-m", "streamlit", "run", str(web),
+               "--server.address", "0.0.0.0", "--server.port", str(puerto),
+               "--server.headless", "true", "--browser.gatherUsageStats", "false"]
+    if args.file:      # Ruta absoluta: el servidor no depende del directorio actual
+        comando += ["--", "--file", str(limpiar_ruta(args.file))]
+    entorno = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    try:
+        return subprocess.call(comando, env=entorno)
+    except KeyboardInterrupt:             # Ctrl+C: Streamlit ya se cierra solo
+        return 0
 
 
 def localizar_xml(argumento: str | None) -> tuple[Path | None, str | None]:
@@ -87,6 +187,9 @@ def localizar_xml(argumento: str | None) -> tuple[Path | None, str | None]:
 
 def main(argv: list[str] | None = None) -> int:
     """Bucle principal protegido: ninguna excepción llega al usuario como traceback."""
+    args = crear_parser().parse_args(argv)
+    if args.web:
+        return lanzar_web(args) if dependencias_ok(DEPENDENCIAS_WEB) else 1
     if not dependencias_ok():
         return 1
 
@@ -94,7 +197,6 @@ def main(argv: list[str] | None = None) -> int:
     from app.ui.console import obtener_consola, panel_aviso, panel_despedida, panel_error
 
     consola = obtener_consola()           # Fuerza UTF-8 antes de imprimir nada
-    args = crear_parser().parse_args(argv)
 
     try:
         from app.ui.menus import App
