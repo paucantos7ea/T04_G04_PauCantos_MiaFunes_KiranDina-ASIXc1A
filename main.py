@@ -69,6 +69,9 @@ def crear_parser() -> argparse.ArgumentParser:
                              "menú de terminal")
     parser.add_argument("--port", type=int, default=PUERTO_WEB, metavar="N",
                         help=f"puerto de la interfaz web (por defecto {PUERTO_WEB})")
+    parser.add_argument("--clave", metavar="TEXTO",
+                        help="con --web: contraseña para entrar en la web "
+                             "(también: variable de entorno MONITOR_CLAVE)")
     return parser
 
 
@@ -127,6 +130,7 @@ def lanzar_web(args: argparse.Namespace) -> int:
 
     puerto = puerto_libre(args.port)
     ip = ip_local()
+    clave = args.clave or os.environ.get("MONITOR_CLAVE", "")
     texto = Text()
     texto.append("Abre en Google Chrome:\n\n", style="bold")
     texto.append("  💻 PC (este equipo)       ", style="dim")
@@ -138,8 +142,10 @@ def lanzar_web(args: argparse.Namespace) -> int:
     if ip == "127.0.0.1":
         texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
                      style="yellow")
-    texto.append("Fuera de tu red: usa un túnel, p. ej. ", style="dim")
-    texto.append(f"cloudflared tunnel --url http://localhost:{puerto}\n", style="dim italic")
+    texto.append("Desde cualquier red: publícala en Streamlit Community Cloud (ver README).\n",
+                 style="dim")
+    if clave:
+        texto.append("🔒 Protegido con contraseña.\n", style="green")
     texto.append("Ctrl+C detiene el servidor.", style="dim")
     consola.print(Panel(texto, title="[bold]🌐 Monitor web de incidencias[/]",
                         border_style="cyan", expand=False, padding=(1, 2)))
@@ -150,6 +156,8 @@ def lanzar_web(args: argparse.Namespace) -> int:
     if args.file:      # Ruta absoluta: el servidor no depende del directorio actual
         comando += ["--", "--file", str(limpiar_ruta(args.file))]
     entorno = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    if clave:
+        entorno["MONITOR_CLAVE"] = clave  # Por entorno: no aparece en la lista de procesos
     try:
         return subprocess.call(comando, env=entorno)
     except KeyboardInterrupt:             # Ctrl+C: Streamlit ya se cierra solo

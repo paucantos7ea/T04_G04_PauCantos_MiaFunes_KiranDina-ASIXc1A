@@ -17,7 +17,9 @@ estado válido y reintenta en el ciclo siguiente.
 from __future__ import annotations
 
 import argparse
+import hmac
 import html
+import os
 import re
 import sys
 import tempfile
@@ -357,8 +359,8 @@ def _barra_lateral() -> None:
         st.markdown("### 📱 Abrir en el móvil")
         st.markdown(f"Con el móvil en la **misma Wi-Fi**, abre en Chrome:\n\n"
                     f"`http://{ip_local()}:{puerto}`")
-        st.caption("Si no carga, permite el puerto en el cortafuegos del PC o usa un túnel "
-                   f"(p. ej. `cloudflared tunnel --url http://localhost:{puerto}`).")
+        st.caption("Desde otra red o con datos móviles: usa la versión publicada en "
+                   "Streamlit Community Cloud (ver README).")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -822,10 +824,33 @@ def _inspector(f: pd.DataFrame, datos: Analizador) -> None:
 # Página
 # ══════════════════════════════════════════════════════════════════════════
 
+def _acceso_permitido() -> bool:
+    """Pide la contraseña si se ha definido MONITOR_CLAVE (o --clave en main.py)."""
+    clave = os.environ.get("MONITOR_CLAVE", "")
+    if not clave:
+        try:                                   # Streamlit Cloud: Settings → Secrets
+            clave = str(st.secrets.get("MONITOR_CLAVE", ""))
+        except Exception:                      # noqa: BLE001 — sin secrets.toml
+            clave = ""
+    if not clave or st.session_state.get("autenticado"):
+        return True
+    st.markdown("## 🔒 Monitor XML de Incidencias")
+    with st.form("acceso"):
+        intento = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Entrar", type="primary"):
+            if hmac.compare_digest(intento.encode(), clave.encode()):
+                st.session_state.autenticado = True
+                st.rerun()
+            st.error("Contraseña incorrecta.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="Monitor XML Incidencias", page_icon="📊", layout="wide",
                        initial_sidebar_state="collapsed")
     st.markdown(CSS, unsafe_allow_html=True)
+    if not _acceso_permitido():
+        return
     _estado_inicial()
     ss = st.session_state
 

@@ -113,7 +113,23 @@ streamlit run web.py --server.address 0.0.0.0 -- --file ruta/al/respotes.xml
 - **🔍 Cómo se categoriza (Auditoría y Reglas)**: mapa de las reglas activas (generado desde `app/config.py`) y un inspector por ID que explica, paso a paso, por qué cada incidencia se validó o rechazó y qué palabra clave fijó su severidad.
 - **Menú lateral** (☰): subir otro XML a mano (útil desde el móvil), pausar la actualización en vivo y ver la URL para el móvil.
 
-**Si el móvil no conecta**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez). Para acceder desde fuera de la red local usa un túnel, p. ej. `cloudflared tunnel --url http://localhost:8501`.
+**Contraseña**: `python main.py --web --clave MiContraseña` pide contraseña antes de mostrar los datos.
+
+### Desde cualquier red (datos móviles, casa…): Streamlit Community Cloud
+
+Sin instalar nada: la web se aloja gratis en los servidores de Streamlit y se abre con un enlace `https://….streamlit.app` desde cualquier sitio.
+
+1. Entra en <https://share.streamlit.io> e inicia sesión con la cuenta de GitHub del repositorio.
+2. **Create app** → *Deploy a public app from GitHub* → repositorio de este proyecto, rama `main`, archivo principal `web.py`.
+3. En **Advanced settings**: elige Python 3.12 y, en *Secrets*, pon la contraseña:
+   ```toml
+   MONITOR_CLAVE = "tu-contraseña"
+   ```
+4. **Deploy**. El enlace sirve para el PC y para el móvil.
+
+La versión en la nube lee el `respotes.xml` / `incidencies.xml` **del repositorio**: cada `git push` con el XML actualizado se refleja solo en la web abierta (la vigilancia en vivo detecta el cambio). Desde el menú lateral también se puede subir otro XML a mano.
+
+**Si el móvil no conecta**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez). Para acceder desde fuera de la red local usa Streamlit Community Cloud (arriba).
 
 ## Estructura
 
