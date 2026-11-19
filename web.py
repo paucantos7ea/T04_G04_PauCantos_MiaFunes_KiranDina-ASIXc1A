@@ -17,8 +17,10 @@ estado válido y reintenta en el ciclo siguiente.
 from __future__ import annotations
 
 import argparse
+import copy
 import hmac
 import html
+import math
 import os
 import re
 import sys
@@ -36,13 +38,21 @@ import plotly.express as px              # noqa: E402
 import plotly.graph_objects as go        # noqa: E402
 import streamlit as st                   # noqa: E402
 
-from app.analytics import Analizador, analizar_archivo                        # noqa: E402
-from app.config import (ANYO_MINIMO, CAT_BASURA, CAT_DESBORDE, CAT_FECHA,     # noqa: E402
-                        CAT_VACIO, MAPA_SEVERIDAD, MARCAS_REALES, MAX_FICHA,
-                        MAX_LONGITUD_CORTO, NIVELES, PALABRAS_BASURA, RE_CAMPO_CORTO,
-                        REGLAS_SEVERIDAD, SEVERIDAD_POR_DEFECTO,
+from app.analytics import (NIVEL_CALIENTE, NIVEL_CRONICO, NIVEL_VIGILAR,     # noqa: E402
+                           Analizador, analizar_archivo, equipos_reincidentes,
+                           fecha_referencia, palabras_emergentes, radar_zonas, zonas_por_mes)
+from app.config import (CAT_BASURA, CAT_DESBORDE, CAT_FECHA, CAT_SIN_SENTIDO,  # noqa: E402
+                        CAT_VACIO, ESTADO_GESTION_DEFECTO, ESTADOS_GESTION, ETIQUETAS_LISTAS,
+                        MAPA_SEVERIDAD, MAX_FICHA, MAX_LONGITUD_CORTO, MIN_FALLOS_CRONICO,
+                        MIN_FALLOS_REINCIDENTE, MIN_FALLOS_VENTANA, NIVELES, PALABRAS_BASURA,
+                        PASOS_SEVERIDAD, RE_CAMPO_CORTO, SEVERIDAD_POR_DEFECTO,
                         TIPO_ANOMALIA, TIPOS_DISPOSITIVO)
+from app.exporter import (NOMBRE_CUARENTENA, NOMBRE_XML_LIMPIO, cuarentena_csv,  # noqa: E402
+                          xml_limpio)
+from app.gestion import ErrorGestion, GestorReparaciones                      # noqa: E402
 from app.models import ErrorCarga, Incidencia                                 # noqa: E402
+from app.rules import (ErrorReglas, Reglas, anadir_palabra, cargar_reglas,    # noqa: E402
+                       guardar_reglas, restaurar_reglas)
 from app.utils import normalizar, truncar                                     # noqa: E402
 from main import ip_local, localizar_xml                                      # noqa: E402
 
@@ -58,8 +68,13 @@ COLOR_NIVEL = {"Crítica": "#e5484d", "Alta": "#f76b15", "Media": "#f5b70a", "Le
 EMOJI_NIVEL = {"Crítica": "🔴", "Alta": "🟠", "Media": "🟡", "Leve": "🔵"}
 COLOR_RESULTADO = {VALIDA: "#30a46c", TIPO_ANOMALIA[CAT_VACIO]: "#8b8d98",
                    TIPO_ANOMALIA[CAT_FECHA]: "#8e4ec6", TIPO_ANOMALIA[CAT_BASURA]: "#e5484d",
-                   TIPO_ANOMALIA[CAT_DESBORDE]: "#f76b15"}
-ICONO_PASO = {"ok": "✅", "bloqueo": "⛔", "aviso": "⚠️", "info": "➜"}
+                   TIPO_ANOMALIA[CAT_DESBORDE]: "#f76b15",
+                   TIPO_ANOMALIA[CAT_SIN_SENTIDO]: "#c2298a"}
+ICONO_PASO = {"ok": "✅", "bloqueo": "⛔", "aviso": "⚠️", "info": "➜", "reparacion": "🔧"}
+EMOJI_GESTION = {"Pendiente": "⏳", "En curso": "🛠️", "Resuelta": "✅"}
+COLOR_GESTION = {"Pendiente": "#8b8d98", "En curso": "#f5b70a", "Resuelta": "#30a46c"}
+POR_PAGINA_TARJETAS = 12
+GESTOR = GestorReparaciones()
 PLOTLY_CONFIG = {"displayModeBar": False, "scrollZoom": False, "responsive": True}
 
 CSS = """
@@ -101,6 +116,7 @@ CSS = """
 .traza .etapa {font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; opacity:.7; display:block;}
 .traza li.bloqueo {background:rgba(229,72,77,.07);}
 .traza li.ok {background:rgba(48,164,108,.07);}
+.traza li.reparacion {background:rgba(62,99,221,.08);}
 .campos {width:100%; border-collapse:collapse; font-size:.86rem;}
 .campos td {padding:.35rem .4rem; border-bottom:1px solid rgba(127,127,127,.18); vertical-align:top;
   overflow-wrap:anywhere;}
@@ -139,17 +155,25 @@ def _firma(ruta: Path) -> tuple[int, int]:
 
 
 @st.cache_resource(max_entries=4, show_spinner="Analizando el XML…")
-def _analizar_disco(ruta: str, mtime_ns: int, tamano: int, hoy: date) -> Analizador:
-    """Las excepciones (XML a medio guardar) no se cachean: se reintenta solo."""
-    return analizar_archivo(Path(ruta), hoy=hoy)
+def _analizar_disco(ruta: str, mtime_ns: int, tamano: int, hoy: date, huella: str,
+                    _reglas: Reglas) -> Analizador:
+    """Clave = archivo + reglas: editar rules.json recalcula todo.
+    Las excepciones (XML a medio guardar) no se cachean: se reintenta solo."""
+    return analizar_archivo(Path(ruta), hoy=hoy, reglas=_reglas)
 
 
 @st.cache_resource(max_entries=2, show_spinner="Analizando el XML subido…")
-def _analizar_subida(contenido: bytes, hoy: date) -> Analizador:
+def _analizar_subida(contenido: bytes, hoy: date, huella: str, _reglas: Reglas) -> Analizador:
     with tempfile.TemporaryDirectory(prefix="monitor_xml_") as carpeta:
         ruta = Path(carpeta) / "subido.xml"          # El parser exige extensión .xml
         ruta.write_bytes(contenido)
-        return analizar_archivo(ruta, hoy=hoy)
+        return analizar_archivo(ruta, hoy=hoy, reglas=_reglas)
+
+
+@st.cache_resource(max_entries=2, show_spinner="Preparando las descargas…")
+def _exportaciones(clave: tuple, _datos: Analizador) -> tuple[bytes, bytes]:
+    """(respotes_limpio.xml, cuarentena.csv) del estado actual."""
+    return xml_limpio(_datos.validas), cuarentena_csv(_datos.anomalas)
 
 
 @st.cache_resource(max_entries=4, show_spinner=False)
@@ -195,15 +219,21 @@ def _estado_inicial() -> None:
     ss.update(iniciado=True, arg_file=arg, fuente="disco", ruta=ruta, aviso_ruta=aviso,
               datos=None, clave=None, nombre="", firma=None, firma_fallida=None, fallos=0,
               error=None, ultima_lectura=None, ultimo_cambio=None, nuevas=set(),
-              subida_id=None, error_subida=None, n_uploader=0, toast=None)
+              subida_id=None, error_subida=None, n_uploader=0, toast=None,
+              huella_reglas=None, aviso_reglas="", subida_bytes=None)
 
 
-def _aplicar(datos: Analizador, clave: tuple, nombre: str, mismo_origen: bool) -> None:
+def _aplicar(datos: Analizador, clave: tuple, nombre: str, mismo_origen: bool,
+            por_reglas: bool = False) -> None:
     """Instala un nuevo estado válido y prepara el aviso de incidencias nuevas."""
     ss = st.session_state
     previo: Analizador | None = ss.datos
     ss.nuevas = set()
-    if previo is not None and mismo_origen:
+    if previo is not None and por_reglas:
+        dif = len(datos.validas) - len(previo.validas)
+        ss.toast = (f"Reglas aplicadas: {len(datos.validas)} válidas "
+                    f"({'+' if dif >= 0 else ''}{dif}) y severidades recalculadas", "🧮")
+    elif previo is not None and mismo_origen:
         anadidas = Counter(i.id for i in datos.todas) - Counter(i.id for i in previo.todas)
         eliminadas = len(previo.todas) - len(datos.todas) + sum(anadidas.values())
         if anadidas:
@@ -231,7 +261,19 @@ def _sincronizar() -> bool:
     en el siguiente ciclo.
     """
     ss = st.session_state
+    reglas = cargar_reglas()
+    cambio_reglas = ss.huella_reglas is not None and reglas.huella != ss.huella_reglas
+    ss.huella_reglas, ss.aviso_reglas = reglas.huella, reglas.aviso
     if ss.fuente != "disco":
+        if cambio_reglas and ss.subida_bytes is not None:
+            try:
+                datos = _analizar_subida(ss.subida_bytes, date.today(), reglas.huella, reglas)
+            except ErrorCarga as error:
+                ss.error_subida = error
+                return False
+            _aplicar(datos, ("subido", ss.subida_id, reglas.huella), ss.nombre, False,
+                     por_reglas=True)
+            return True
         return False
 
     # Sin --file se vuelve a buscar en cada ciclo: si aparece respotes.xml, se adopta
@@ -250,13 +292,14 @@ def _sincronizar() -> bool:
         ss.error = ErrorCarga("Archivo no disponible", f"No se puede leer:\n{ruta}")
         return False
     ss.ultima_lectura = datetime.now()
-    if firma == ss.firma:
+    if firma == ss.firma and not cambio_reglas:
         return False
-    if firma == ss.firma_fallida and ss.fallos >= MAX_REINTENTOS:
+    if firma == ss.firma_fallida and ss.fallos >= MAX_REINTENTOS and not cambio_reglas:
         return False                     # Error persistente: esperar a que cambie
+    solo_reglas = cambio_reglas and firma == ss.firma
 
     try:
-        datos = _analizar_disco(str(ruta), *firma, date.today())
+        datos = _analizar_disco(str(ruta), *firma, date.today(), reglas.huella, reglas)
         if _firma(ruta) != firma:        # Lo han reescrito mientras se leía
             raise ErrorCarga("Guardado en curso", "El archivo ha cambiado durante la lectura.")
     except (ErrorCarga, OSError) as error:
@@ -268,13 +311,14 @@ def _sincronizar() -> bool:
 
     mismo = ss.clave is not None and ss.clave[:2] == ("disco", str(ruta))
     ss.firma, ss.firma_fallida, ss.fallos = firma, None, 0
-    _aplicar(datos, ("disco", str(ruta), *firma), ruta.name, mismo)
+    _aplicar(datos, ("disco", str(ruta), *firma, reglas.huella), ruta.name, mismo,
+             por_reglas=solo_reglas)
     return True
 
 
 def _volver_a_disco() -> None:
     ss = st.session_state
-    ss.update(fuente="disco", firma=None, subida_id=None, error_subida=None,
+    ss.update(fuente="disco", firma=None, subida_id=None, error_subida=None, subida_bytes=None,
               n_uploader=ss.n_uploader + 1)    # Nueva key = uploader vacío
 
 
@@ -337,13 +381,14 @@ def _barra_lateral() -> None:
                                   help="Útil desde el móvil: analiza un XML sin tocar el vigilado.")
         if subida is not None and subida.file_id != ss.subida_id:
             ss.subida_id = subida.file_id
+            reglas = cargar_reglas()
             try:
-                datos = _analizar_subida(subida.getvalue(), date.today())
+                datos = _analizar_subida(subida.getvalue(), date.today(), reglas.huella, reglas)
             except ErrorCarga as error:
                 ss.error_subida = error
             else:
-                ss.update(fuente="subido", error_subida=None)
-                _aplicar(datos, ("subido", subida.file_id), subida.name, False)
+                ss.update(fuente="subido", error_subida=None, subida_bytes=subida.getvalue())
+                _aplicar(datos, ("subido", subida.file_id, reglas.huella), subida.name, False)
         elif subida is None and ss.fuente == "subido":
             _volver_a_disco()              # Han quitado el archivo con la ✕
 
@@ -354,20 +399,24 @@ def _barra_lateral() -> None:
             st.button("↩️ Volver al archivo vigilado", on_click=_volver_a_disco,
                       width="stretch")
 
+        if ss.get("aviso_reglas"):
+            st.warning(f"**rules.json**: {ss.aviso_reglas}", icon="⚠️")
+
         st.divider()
         puerto = st.get_option("server.port")
         st.markdown("### 📱 Abrir en el móvil")
         st.markdown(f"Con el móvil en la **misma Wi-Fi**, abre en Chrome:\n\n"
                     f"`http://{ip_local()}:{puerto}`")
-        st.caption("Desde otra red o con datos móviles: usa la versión publicada en "
-                   "Streamlit Community Cloud (ver README).")
+        st.caption("Desde otra red o con datos móviles: arranca con `python3 main.py --web` "
+                   "(abre un túnel público con QR) o usa Streamlit Community Cloud (ver README).")
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Filtros
 # ══════════════════════════════════════════════════════════════════════════
 
-CLAVES_FILTRO = ("f_texto", "f_estado", "f_sev", "f_anom", "f_cat", "f_marca", "f_fechas")
+CLAVES_FILTRO = ("f_texto", "f_estado", "f_sev", "f_rep", "f_anom", "f_cat", "f_marca",
+                 "f_fechas")
 
 
 def _limpiar_filtros() -> None:
@@ -385,13 +434,17 @@ def _filtros(df: pd.DataFrame) -> pd.DataFrame:
     validas = df[df["Estado"] == VALIDA]
     texto = st.text_input("🔎 Buscar por ID o texto", key="f_texto",
                           placeholder="Ej.: impressora, Dell, no arrenca…  ·  #42 = ID exacto")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         estado = st.pills("Estado", [VALIDA, BLOQUEADA], selection_mode="multi", key="f_estado",
                           format_func=lambda x: f"✅ {x}s" if x == VALIDA else f"⛔ {x}s")
     with c2:
         sev = st.pills("Severidad", NIVELES, selection_mode="multi", key="f_sev",
                        format_func=lambda n: f"{EMOJI_NIVEL[n]} {n}")
+    with c3:
+        reparacion = st.pills("Reparación", ESTADOS_GESTION, selection_mode="multi", key="f_rep",
+                              format_func=lambda x: f"{EMOJI_GESTION[x]} {x}",
+                              help="Seguimiento del técnico (solo incidencias válidas).")
     with st.expander("🎛️ Más filtros: anomalía, categoría, marca y fechas"):
         anom = st.pills("Tipo de anomalía", list(TIPO_ANOMALIA.values()),
                         selection_mode="multi", key="f_anom")
@@ -419,6 +472,8 @@ def _filtros(df: pd.DataFrame) -> pd.DataFrame:
             m &= df["_busca"].str.contains(consulta, regex=False)
     if estado:
         m &= df["Estado"].isin(estado)
+    if reparacion:
+        m &= (df["Estado"] == VALIDA) & df["Reparación"].isin(reparacion)
     if sev or anom:
         ok_val = (df["Estado"] == VALIDA) & df["Severidad"].isin(sev) if sev else False
         ok_blo = ((df["Estado"] == BLOQUEADA)
@@ -559,7 +614,7 @@ def _grafico_ranking(f: pd.DataFrame, columna: str, titulo: str, color: str, cla
     _pintar(_estilo(fig, alto=max(240, 34 * len(conteo) + 40), leyenda=False), clave)
 
 
-def _panel(f: pd.DataFrame) -> None:
+def _panel(f: pd.DataFrame, datos: Analizador) -> None:
     c1, c2 = st.columns(2, gap="large")
     with c1:
         _grafico_donut(f)
@@ -571,6 +626,115 @@ def _panel(f: pd.DataFrame) -> None:
         _grafico_ranking(f, "Equipo", "Top equipos con más fallos", "#3e63dd", "g_equipos")
     with c4:
         _grafico_ranking(f, "Categoría", "Categorías con más fallos", "#8e4ec6", "g_categorias")
+    st.divider()
+    _progreso_reparaciones(f)
+    st.divider()
+    _radar(f, datos)
+
+
+def _progreso_reparaciones(f: pd.DataFrame) -> None:
+    st.markdown("##### 🛠️ Progreso de reparaciones")
+    st.caption("Estado que marcan los técnicos en la pestaña Incidencias → Tarjetas de reparación "
+               "(se guarda en gestion.json; el XML no se toca).")
+    v = f[f["Estado"] == VALIDA]
+    if v.empty:
+        return _vacio()
+    conteo = v["Reparación"].value_counts()
+    total, hechas = len(v), int(conteo.get("Resuelta", 0))
+    st.progress(hechas / total, text=f"{hechas:,} de {total:,} incidencias válidas resueltas "
+                                     f"({hechas / total * 100:.0f} %)".replace(",", "."))
+    for col, estado in zip(st.columns(len(ESTADOS_GESTION)), ESTADOS_GESTION):
+        col.metric(f"{EMOJI_GESTION[estado]} {estado}",
+                   f"{int(conteo.get(estado, 0)):,}".replace(",", "."))
+    tabla = v.groupby(["Severidad", "Reparación"]).size().reset_index(name="Incidencias")
+    fig = px.bar(tabla, x="Incidencias", y="Severidad", color="Reparación", orientation="h",
+                 color_discrete_map=COLOR_GESTION,
+                 category_orders={"Severidad": NIVELES, "Reparación": ESTADOS_GESTION})
+    fig.update_layout(barmode="stack")
+    _pintar(_estilo(fig, alto=230), "g_reparaciones")
+
+
+def _radar(f: pd.DataFrame, datos: Analizador) -> None:
+    cab, ctrl = st.columns([3, 2], vertical_alignment="bottom")
+    with cab:
+        st.markdown("##### 🛰️ Radar de zonas y equipos crónicos")
+    with ctrl:
+        ventana = st.segmented_control("Ventana", [30, 60, 90], default=30, key="g_ventana",
+                                       format_func=lambda d: f"{d} días",
+                                       label_visibility="collapsed") or 30
+    incidencias = [datos.todas[int(p)] for p in f["pos"]]
+    referencia = fecha_referencia(incidencias)
+    if referencia is None:
+        return _vacio()
+    ventana_eq = max(90, ventana)
+    zonas = radar_zonas(incidencias, referencia, ventana)
+    equipos = equipos_reincidentes(incidencias, referencia, ventana_eq)
+    st.caption(f"Ventana reciente: {ventana} días hasta el {referencia:%d/%m/%Y} (fecha de "
+               "referencia del dataset; se ignoran casos sueltos muy tardíos). Una zona es "
+               "«punto caliente» si en la ventana acumula ≥ 30 % más fallos de lo que le toca "
+               "por su ritmo histórico. Un equipo es «crónico» con ≥ "
+               f"{MIN_FALLOS_CRONICO} fallos o ≥ {MIN_FALLOS_VENTANA} en {ventana_eq} días, y "
+               f"«reincidente» con ≥ {MIN_FALLOS_REINCIDENTE}.")
+
+    calientes = [z for z in zonas if z.nivel == NIVEL_CALIENTE]
+    vigilar = [z for z in zonas if z.nivel == NIVEL_VIGILAR]
+    cronicos = [q for q in equipos if q.nivel == NIVEL_CRONICO]
+    activos = [q for q in cronicos if q.recientes]
+    if calientes or activos:
+        partes = []
+        if calientes:
+            partes.append("zonas calientes: " + ", ".join(
+                f"**{e(z.clave)}** (×{z.tendencia:.1f})" for z in calientes))
+        if activos:
+            partes.append(f"**{len(activos)}** equipos crónicos con fallos en los últimos "
+                          f"{ventana_eq} días (" + ", ".join(e(q.clave) for q in activos[:5])
+                          + ("…" if len(activos) > 5 else "") + ")")
+        st.error("🚨 " + " · ".join(partes))
+    elif vigilar or cronicos:
+        st.warning(f"⚠️ {len(vigilar)} zona(s) por encima de su ritmo habitual y "
+                   f"{len(cronicos)} equipo(s) crónico(s) sin fallos recientes.")
+    else:
+        st.success("✅ Ninguna zona ni equipo acumula fallos fuera de lo normal.")
+
+    c1, c2 = st.columns([1, 1.3], gap="large")
+    with c1:
+        st.markdown("**Zonas: fallos en la ventana**")
+        if zonas:
+            colores = {NIVEL_CALIENTE: "#e5484d", NIVEL_VIGILAR: "#f5b70a"}
+            orden = zonas[::-1]
+            fig = go.Figure(go.Bar(
+                x=[z.recientes for z in orden], y=[z.clave for z in orden], orientation="h",
+                marker_color=[colores.get(z.nivel, "#3e63dd") for z in orden],
+                text=[f"{z.recientes} · ×{z.tendencia:.1f}" for z in orden], textposition="outside",
+                cliponaxis=False, customdata=[[z.total, z.nivel] for z in orden],
+                hovertemplate="<b>%{y}</b><br>%{x} en la ventana · %{customdata[0]} en total"
+                              "<br>%{customdata[1]}<extra></extra>"))
+            _pintar(_estilo(fig, alto=max(220, 40 * len(zonas) + 40), leyenda=False), "g_zonas")
+        else:
+            _vacio("No hay campo de zona en el XML.")
+    with c2:
+        st.markdown(f"**Equipos con fallos repetidos ({len(equipos)})**")
+        if equipos:
+            st.dataframe(pd.DataFrame([{
+                "Alerta": q.nivel, "Equipo": q.clave, "Fallos": q.total,
+                f"Últ. {ventana_eq} d": q.recientes,
+                "Último": pd.Timestamp(q.ultima) if q.ultima else pd.NaT,
+                "Zona": q.zona, "Categoría": q.categoria} for q in equipos]),
+                hide_index=True, height=300, key="t_equipos",
+                column_config={"Último": st.column_config.DateColumn(format="DD/MM/YYYY")})
+        else:
+            _vacio("Ningún equipo repite fallos con los filtros actuales.")
+
+    mapa = zonas_por_mes(incidencias)
+    if mapa:
+        st.markdown("**Mapa de calor: fallos por zona y mes**")
+        tabla = pd.DataFrame(mapa, columns=["Zona", "Mes", "Fallos"]).pivot(
+            index="Zona", columns="Mes", values="Fallos").fillna(0)
+        fig = go.Figure(go.Heatmap(z=tabla.values, x=tabla.columns, y=tabla.index,
+                                   colorscale="OrRd", hoverongaps=False,
+                                   hovertemplate="<b>%{y}</b> · %{x}<br>%{z:.0f} fallos"
+                                                 "<extra></extra>"))
+        _pintar(_estilo(fig, alto=max(220, 36 * len(tabla) + 80), leyenda=False), "g_calor")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -585,6 +749,8 @@ def _vista_tabla(f: pd.DataFrame) -> pd.DataFrame:
         "Estado": f["Estado"].map(lambda s: f"✅ {s}" if s == VALIDA else f"⛔ {s}"),
         "Resultado": [f"{EMOJI_NIVEL[s]} {s}" if isinstance(s, str) else f"⛔ {r}"
                       for s, r in zip(f["Severidad"], f["Resultado"])],
+        "Reparación": f["Reparación"].map(
+            lambda r: f"{EMOJI_GESTION[r]} {r}" if isinstance(r, str) else "—"),
         "Por qué": f["Por qué"],
         "Categoría": f["Categoría"],
         "Marca": f["Marca"],
@@ -595,13 +761,30 @@ def _vista_tabla(f: pd.DataFrame) -> pd.DataFrame:
 
 
 def _listado(f: pd.DataFrame, datos: Analizador) -> None:
-    cab, boton = st.columns([3, 1], vertical_alignment="bottom")
-    cab.caption(f"**{len(f):,}** incidencias con los filtros actuales · "
-                "toca una fila para ver su ficha explicada.".replace(",", "."))
-    boton.download_button("⬇️ CSV", f.drop(columns=["_busca", "pos", "Tipos"])
-                          .to_csv(index=False).encode("utf-8-sig"),
-                          file_name="incidencias_filtradas.csv", mime="text/csv",
-                          width="stretch")
+    xml_bytes, csv_bytes = _exportaciones(st.session_state.clave, datos)
+    d1, d2, d3 = st.columns(3)
+    d1.download_button("⬇️ CSV (filtro actual)", f.drop(columns=["_busca", "pos", "Tipos"])
+                       .to_csv(index=False).encode("utf-8-sig"),
+                       file_name="incidencias_filtradas.csv", mime="text/csv", width="stretch")
+    d2.download_button(f"🧼 {NOMBRE_XML_LIMPIO}", xml_bytes, file_name=NOMBRE_XML_LIMPIO,
+                       mime="application/xml", width="stretch",
+                       help=f"{len(datos.validas):,} incidencias VÁLIDAS ya auto-reparadas, con "
+                            "la misma estructura que el XML original (sin basura ni texto "
+                            "aleatorio).")
+    d3.download_button(f"🚫 {NOMBRE_CUARENTENA}", csv_bytes, file_name=NOMBRE_CUARENTENA,
+                       mime="text/csv", width="stretch",
+                       help=f"{len(datos.anomalas):,} incidencias bloqueadas: una fila por "
+                            "regla incumplida, con el campo afectado y el motivo exacto.")
+
+    vista = st.segmented_control("Vista", ["📋 Tabla", "🛠️ Tarjetas de reparación"],
+                                 default="📋 Tabla", key="vista_listado",
+                                 label_visibility="collapsed") or "📋 Tabla"
+    if vista.startswith("🛠️"):
+        _tarjetas(f, datos)
+        return
+
+    st.caption(f"**{len(f):,}** incidencias con los filtros actuales · "
+               "toca una fila para ver su ficha explicada.".replace(",", "."))
     evento = st.dataframe(
         _vista_tabla(f), hide_index=True, height=440, key="tabla",
         on_select="rerun", selection_mode="single-row",
@@ -615,10 +798,76 @@ def _listado(f: pd.DataFrame, datos: Analizador) -> None:
     filas = evento.selection.rows if evento else []
     if filas and filas[0] < len(f):
         st.divider()
-        _ficha(datos.todas[int(f.iloc[filas[0]]["pos"])])
+        _ficha(datos.todas[int(f.iloc[filas[0]]["pos"])], "lista")
 
 
-def _ficha(inc: Incidencia) -> None:
+def _tarjetas(f: pd.DataFrame, datos: Analizador) -> None:
+    """Tarjetas táctiles desplegables para que el técnico marque el estado."""
+    ss = st.session_state
+    v = f[f["Estado"] == VALIDA]
+    st.caption(f"**{len(v):,}** incidencias válidas con los filtros actuales · abre una "
+               "tarjeta para cambiar su estado o dejar una nota.".replace(",", "."))
+    if ss.get("error_gestion"):
+        st.error(ss.error_gestion)
+    if v.empty:
+        return _vacio()
+    paginas = max(1, math.ceil(len(v) / POR_PAGINA_TARJETAS))
+    pagina = 1
+    if paginas > 1:
+        pagina = int(st.number_input(f"Página (de {paginas})", min_value=1, max_value=paginas,
+                                     value=1, step=1, key="pag_tarjetas"))
+    inicio = (min(pagina, paginas) - 1) * POR_PAGINA_TARJETAS
+    for pos in v["pos"].iloc[inicio:inicio + POR_PAGINA_TARJETAS]:
+        inc = datos.todas[int(pos)]
+        estado = ss.gestion.get(inc.id)
+        nombre = estado.estado if estado else ESTADO_GESTION_DEFECTO
+        titulo = (f"{EMOJI_GESTION[nombre]} #{inc.id} · {EMOJI_NIVEL.get(inc.severidad, '')} "
+                  f"{inc.severidad} · {truncar(inc.equipo, 22) or '—'} — "
+                  f"{truncar(inc.descripcion, 55)}")
+        with st.expander(titulo):
+            st.markdown(e(inc.descripcion))
+            datos_inc = [f"📅 {inc.fecha:%d/%m/%Y}" if inc.fecha else "📅 —",
+                         f"🏷️ {inc.tipo}", f"🏭 {inc.marca or 'Sin marca'}"]
+            datos_inc += [f"{icono} {valor}" for icono, valor in (
+                ("📍", _campo(inc, "zona")), ("🔖", _campo(inc, "codi"))) if valor]
+            st.caption(" · ".join(datos_inc))
+            _editor_reparacion(inc, f"t{pos}")
+
+
+def _campo(inc: Incidencia, fragmento: str) -> str:
+    """Valor del primer campo cuyo nombre contiene `fragmento` (sin tildes)."""
+    for nombre, valor in inc.campos.items():
+        if fragmento in normalizar(nombre):
+            return truncar(valor, 40)
+    return ""
+
+
+def _editor_reparacion(inc: Incidencia, clave: str) -> None:
+    ss = st.session_state
+    if ss.get("error_gestion"):
+        st.caption("Seguimiento no disponible: gestion.json no se puede leer.")
+        return
+    actual = ss.gestion.get(inc.id)
+    with st.form(f"form_rep_{clave}", border=False):
+        nuevo = st.radio("Estado de la reparación", ESTADOS_GESTION, horizontal=True,
+                         index=ESTADOS_GESTION.index(actual.estado) if actual else 0,
+                         format_func=lambda x: f"{EMOJI_GESTION[x]} {x}", key=f"rep_e_{clave}")
+        nota = st.text_input("Nota rápida de reparación", value=actual.nota if actual else "",
+                             max_chars=500, placeholder="Ej.: cambiado el cable HDMI",
+                             key=f"rep_n_{clave}")
+        if st.form_submit_button("💾 Guardar", type="primary", width="stretch"):
+            try:
+                GESTOR.actualizar(inc.id, nuevo, nota)
+            except ErrorGestion as error:
+                st.error(str(error))
+            else:
+                ss.toast = (f"#{inc.id} → {nuevo}", EMOJI_GESTION[nuevo])
+                st.rerun()
+    if actual and actual.actualizado:
+        st.caption(f"Última actualización: {actual.actualizado.replace('T', ' ')}")
+
+
+def _ficha(inc: Incidencia, origen: str = "ficha") -> None:
     """Ficha visual: campos originales + explicación paso a paso del motor."""
     principal = inc.anomalia_principal
     if inc.valida:
@@ -636,6 +885,9 @@ def _ficha(inc: Incidencia) -> None:
         resumen = (f"Rechazada por <b>{e(principal.tipo)}</b>{donde}: "
                    f"{e(principal.motivo_detallado)}"
                    + (f"<br>…y {extra} regla(s) más (detalle abajo)." if extra else ""))
+    if inc.auto_reparada:
+        resumen += (f"<br>🔧 <b>Auto-reparada</b>: {len(inc.reparaciones)} corrección(es) "
+                    f"en {e(', '.join(sorted({r.campo for r in inc.reparaciones})))}.")
 
     st.markdown(f"#### Incidencia #{e(inc.id)} &nbsp;·&nbsp; {e(etiqueta)}",
                 unsafe_allow_html=True)
@@ -673,6 +925,16 @@ def _ficha(inc: Incidencia) -> None:
                 f'<div class="anomalia"><b>{n}. {e(a.tipo)}</b> · campo «{e(a.campo)}»<br>'
                 f"{e(a.motivo_detallado)}<br>Valor: <code>{e(truncar(a.valor, MAX_FICHA))}"
                 f"</code>{extra}</div>", unsafe_allow_html=True)
+
+    if inc.reparaciones:
+        st.markdown("**🔧 Auto-reparaciones aplicadas antes de validar**")
+        st.dataframe(pd.DataFrame([{"Campo": r.campo, "Antes": truncar(r.antes, 80),
+                                    "Después": truncar(r.despues, 80), "Motivo": r.motivo}
+                                   for r in inc.reparaciones]),
+                     hide_index=True, key=f"rep_tabla_{origen}_{inc.id}")
+    if inc.valida:
+        with st.expander("🛠️ Seguimiento de la reparación"):
+            _editor_reparacion(inc, f"{origen}_{inc.id}")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -715,16 +977,24 @@ def _tarjeta_regla(paso: str, titulo: str, nivel: str | None, texto: str, chips:
             f'<div>{chips}</div><p class="cuenta">{cuenta}</p></div>')
 
 
-def _mapa_reglas(df: pd.DataFrame, datos: Analizador) -> None:
+def _mapa_reglas(df: pd.DataFrame, datos: Analizador, reglas: Reglas) -> None:
     validas = df[df["Estado"] == VALIDA]
     criterios = validas["Criterio"].fillna("")
+    listas = {**reglas.datos["severidad"], **reglas.datos["lexico_tecnico"]}
+
     def cuantas(prefijo: str) -> str:
         n = int(criterios.str.startswith(prefijo).sum())
         return f"📌 {n:,} incidencias válidas resueltas así".replace(",", ".")
 
+    def chips_de(claves: list[str]) -> str:
+        return "".join(f"<div><b>{e(ETIQUETAS_LISTAS[c].split(' · ')[-1])}</b>: "
+                       f"{_chips(listas[c][:40])}{' …' if len(listas[c]) > 40 else ''}</div>"
+                       for c in claves)
+
     st.markdown("#### 🗺️ Cómo se decide la severidad")
-    st.caption("Se evalúa en orden y **gana la primera regla que encaja**. Las palabras clave se "
-               "buscan en la descripción, el equipo y su categoría (sin tildes ni mayúsculas).")
+    st.caption("Se evalúa en orden y **gana la primera regla que encaja**. Las palabras clave "
+               "salen de **rules.json** (editables abajo) y se buscan en la descripción, el "
+               "equipo y su categoría, sin tildes ni mayúsculas.")
     tarjetas = [_tarjeta_regla(
         "Paso 0 · Prioridad explícita", "Campo de prioridad del XML", None,
         "Si el XML trae un campo <i>Prioritat / Severitat / Urgència</i>, manda su valor y no "
@@ -732,12 +1002,12 @@ def _mapa_reglas(df: pd.DataFrame, datos: Analizador) -> None:
         "".join(f"<div><b>{e(n)}</b>: {_chips(_alternativas(p.pattern))}</div>"
                 for n, p in MAPA_SEVERIDAD),
         cuantas("Campo de prioridad"), "#8b8d98")]
-    for regla in REGLAS_SEVERIDAD:
+    for paso in PASOS_SEVERIDAD:
         tarjetas.append(_tarjeta_regla(
-            f"Paso {regla.paso}", regla.titulo, regla.nivel, e(regla.descripcion),
-            _chips(_alternativas(regla.patron.pattern)), cuantas(f"Paso {regla.paso} "),
-            COLOR_NIVEL[regla.nivel]))
-    ultimo = len(REGLAS_SEVERIDAD) + 1
+            f"Paso {paso['paso']}", paso["titulo"], paso["nivel"], e(paso["descripcion"]),
+            chips_de(paso["listas"]), cuantas(f"Paso {paso['paso']} "),
+            COLOR_NIVEL[paso["nivel"]]))
+    ultimo = len(PASOS_SEVERIDAD) + 1
     tarjetas.append(_tarjeta_regla(
         f"Paso {ultimo}", "Sin pistas", SEVERIDAD_POR_DEFECTO,
         "Ninguna palabra clave encaja: se asume <b>fallo genérico</b> (mejor no infravalorar).",
@@ -746,15 +1016,19 @@ def _mapa_reglas(df: pd.DataFrame, datos: Analizador) -> None:
 
     st.markdown("#### 🚫 Qué bloquea el sistema")
     st.caption("Una sola regla incumplida basta para bloquear la incidencia: no cuenta en las "
-               "métricas de válidas.")
+               "métricas de válidas. Antes de validar se auto-reparan fechas, espacios y "
+               "mayúsculas de marca.")
     por_tipo = Counter(a.tipo for i in datos.anomalas for a in i.anomalias)
+
     def veces(cat: str) -> str:
         return f"📌 Detectado {por_tipo.get(TIPO_ANOMALIA[cat], 0):,} veces".replace(",", ".")
+
     hoy = date.today()
     bloqueos = [
         (CAT_FECHA, "Campos de fecha (<i>Data, Fecha, Date…</i>) con:",
-         [f"año < {ANYO_MINIMO}", f"año > {hoy.year}", f"posterior a {hoy:%d/%m/%Y}",
-          "día/mes inexistente (31/02)", "sin formato reconocible"]),
+         [f"año < {reglas.anyo_minimo}", f"año > {reglas.anyo_maximo(hoy)}",
+          f"posterior a {hoy:%d/%m/%Y}", "día/mes inexistente (31/02)",
+          "sin formato reconocible"]),
         (CAT_VACIO, "Etiquetas vacías o de autocierre en campos obligatorios. Marca y modelo "
                     "son opcionales y <b>no</b> bloquean:",
          ['<camp nom="X"/>', '<camp nom="X"></camp>', "sin atributo id",
@@ -762,6 +1036,12 @@ def _mapa_reglas(df: pd.DataFrame, datos: Analizador) -> None:
         (CAT_BASURA, "Texto que no es una incidencia real, en cualquier campo:",
          ["binario ≥ 3 bytes (01001000…)", "escritura amárica (ሀ…)",
           *(f"{p} → {t}" for p, t in PALABRAS_BASURA.items())]),
+        (CAT_SIN_SENTIDO, "Descripciones sin intención técnica. Fuerza = 2 × síntomas + "
+                          "dispositivos del léxico técnico; con fuerza ≥ 2 se acepta "
+                          "(«No funciona», «Teclat trencat»):",
+         ["micro-frases planas tipo Faker con fuerza < 2", "párrafo ≥ 25 palabras con fuerza < 3",
+          "≥ 12 palabras sin ningún término técnico", "sin ninguna palabra («69»)",
+          "señal: nombres o lugares al azar", "señal: letras o «ii» sueltos"]),
         (CAT_DESBORDE, f"Más de <b>{MAX_LONGITUD_CORTO}</b> caracteres en un campo breve "
                        "(código, equipo, marca, modelo, IP…):",
          re.search(r"\((.*)\)", RE_CAMPO_CORTO.pattern).group(1).split("|")),
@@ -774,7 +1054,7 @@ def _mapa_reglas(df: pd.DataFrame, datos: Analizador) -> None:
     with st.expander("🏷️ Categorías de equipo y marcas reconocidas"):
         st.caption("Si el XML no trae categoría, se deduce del equipo (y si no, de la "
                    "descripción): gana la primera fila que encaja. La marca se lee del campo "
-                   "«Marca d'equip» y, si viene vacía, se busca con estos patrones.")
+                   "«Marca d'equip» y, si viene vacía, se busca con los alias de rules.json.")
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Categorías**")
@@ -782,8 +1062,132 @@ def _mapa_reglas(df: pd.DataFrame, datos: Analizador) -> None:
                                 for n, p in TIPOS_DISPOSITIVO), unsafe_allow_html=True)
         with c2:
             st.markdown("**Marcas**")
-            st.markdown("".join(f"<div><b>{e(n)}</b>: {_chips(_alternativas(p.pattern))}</div>"
-                                for n, p in MARCAS_REALES), unsafe_allow_html=True)
+            st.markdown("".join(f"<div><b>{e(n)}</b>: {_chips(alias)}</div>"
+                                for n, alias in reglas.datos["marcas"].items()),
+                        unsafe_allow_html=True)
+
+
+def _emergentes(f: pd.DataFrame, datos: Analizador, reglas: Reglas) -> None:
+    st.markdown("#### 🧪 Problemas emergentes detectados")
+    st.caption("Palabras y parejas de palabras frecuentes en las incidencias válidas que el "
+               "motor deja en «Altres» o en severidad Media y que todavía **no** son palabra "
+               "clave de ninguna regla de severidad. Añade una a la lista que quieras con un "
+               "clic: se guarda en rules.json y se recalcula todo.")
+    incidencias = [datos.todas[int(p)] for p in f["pos"]]
+    terminos = palabras_emergentes(incidencias,
+                                   [reglas.patron(c) for c in reglas.datos["severidad"]], top=8)
+    if not terminos:
+        st.info("No hay términos nuevos frecuentes con los filtros actuales.", icon="🫥")
+        return
+    claves = list(ETIQUETAS_LISTAS)
+    destino = st.selectbox("Añadir a la lista", claves, index=claves.index("media_generico"),
+                           format_func=ETIQUETAS_LISTAS.get, key="em_destino")
+    c1, c2 = st.columns([1.2, 1], gap="large")
+    with c1:
+        orden = terminos[::-1]
+        fig = go.Figure(go.Bar(
+            x=[t.incidencias for t in orden], y=[f"{t.texto}  ({t.tipo[0]})" for t in orden],
+            orientation="h", marker_color=["#8e4ec6" if t.tipo == "Bigrama" else "#3e63dd"
+                                           for t in orden],
+            text=[t.incidencias for t in orden], textposition="outside", cliponaxis=False,
+            customdata=[truncar(t.ejemplo, 90) for t in orden],
+            hovertemplate="<b>%{y}</b><br>%{x} incidencias<br><i>%{customdata}</i>"
+                          "<extra></extra>"))
+        _pintar(_estilo(fig, alto=max(260, 26 * len(orden) + 40), leyenda=False), "g_emergentes")
+        st.caption("(P) palabra · (B) bigrama")
+    with c2:
+        for t in terminos:
+            texto, boton = st.columns([3, 1], vertical_alignment="center")
+            texto.markdown(f"`{e(t.texto)}` · {t.incidencias}")
+            if boton.button("➕", key=f"em_{t.tipo}_{t.texto}", help=f"Añadir «{t.texto}» a "
+                            f"{ETIQUETAS_LISTAS[destino]}"):
+                try:
+                    anadir_palabra(destino, t.texto)
+                except (ErrorReglas, OSError) as error:
+                    st.error(f"No se ha podido añadir: {error}")
+                else:
+                    st.session_state.toast = (f"«{t.texto}» añadida a "
+                                              f"{ETIQUETAS_LISTAS[destino]}", "➕")
+                    st.rerun()
+
+
+GRUPOS_EDITOR = [
+    ("🔴 Crítica", ["critica_caida_general", "critica_caida", "critica_infraestructura",
+                   "critica_multiusuario", "afectados_multiples"]),
+    ("🟠 Alta", ["alta_hardware", "alta_arranque"]),
+    ("🔵 Leve", ["leve_perifericos"]),
+    ("🟡 Media", ["media_generico"]),
+    ("🧠 Léxico técnico (filtro anti-texto aleatorio)", ["sintomas", "dispositivos"]),
+]
+
+
+def _editor_reglas(reglas: Reglas) -> None:
+    st.markdown("#### ✏️ Editor de reglas (rules.json)")
+    st.caption(f"Origen: **{e(reglas.origen)}** · versión `{reglas.huella}`. Una palabra o "
+               "expresión por línea; las tildes y mayúsculas se normalizan solas. Se buscan al "
+               "**inicio de palabra** («impressor» encaja con impressora e impressores); las "
+               "marcas, como palabra completa. Al guardar se recalcula todo el dataset.")
+    if reglas.aviso:
+        st.warning(reglas.aviso, icon="⚠️")
+    d, h = reglas.datos, reglas.huella
+    textos: dict[str, str] = {}
+    with st.form("editor_reglas"):
+        c1, c2 = st.columns(2)
+        minimo = c1.number_input("Año mínimo válido", min_value=1, max_value=9999,
+                                 value=d["anyos"]["minimo"], step=1, key=f"r_min_{h}")
+        maximo = c2.number_input("Año máximo válido (0 = año actual)", min_value=0,
+                                 max_value=9999, value=d["anyos"]["maximo"] or 0, step=1,
+                                 key=f"r_max_{h}")
+        for titulo, claves in GRUPOS_EDITOR:
+            with st.expander(titulo):
+                for clave in claves:
+                    grupo = "severidad" if clave in d["severidad"] else "lexico_tecnico"
+                    textos[clave] = st.text_area(ETIQUETAS_LISTAS[clave],
+                                                 "\n".join(d[grupo][clave]), height=160,
+                                                 key=f"r_{clave}_{h}")
+        with st.expander("🏷️ Marcas reconocidas"):
+            marcas_txt = st.text_area(
+                "Una marca por línea: «Marca: alias, alias…»",
+                "\n".join(f"{n}: {', '.join(a)}" for n, a in d["marcas"].items()),
+                height=280, key=f"r_marcas_{h}")
+        guardar = st.form_submit_button("💾 Guardar y recalcular", type="primary")
+
+    if guardar:
+        nuevos = copy.deepcopy(d)
+        nuevos["anyos"] = {"minimo": int(minimo), "maximo": int(maximo) or None}
+        for clave, texto in textos.items():
+            grupo = "severidad" if clave in d["severidad"] else "lexico_tecnico"
+            nuevos[grupo][clave] = [l.strip() for l in texto.splitlines() if l.strip()]
+        marcas: dict[str, list[str]] = {}
+        for linea in marcas_txt.splitlines():
+            nombre, _, alias = linea.partition(":")
+            if nombre.strip():
+                marcas[nombre.strip()] = [a.strip() for a in alias.split(",") if a.strip()]
+        nuevos["marcas"] = marcas
+        vacias = [ETIQUETAS_LISTAS[c] for c in ("sintomas", "dispositivos")
+                  if not nuevos["lexico_tecnico"][c]]
+        try:
+            guardar_reglas(nuevos)
+        except (ErrorReglas, OSError) as error:
+            st.error(f"No se ha guardado: {error}")
+        else:
+            if vacias:
+                st.session_state.toast = ("Guardado, pero con el léxico técnico vacío casi "
+                                          "todas las descripciones se bloquearán", "⚠️")
+            else:
+                st.session_state.toast = ("Reglas guardadas en rules.json", "💾")
+            st.rerun()
+
+    with st.popover("↩️ Restaurar valores de fábrica"):
+        st.write("Sustituye rules.json por las reglas originales del programa.")
+        if st.button("Sí, restaurar", type="primary", key="r_restaurar"):
+            try:
+                restaurar_reglas()
+            except (ErrorReglas, OSError) as error:
+                st.error(f"No se ha podido restaurar: {error}")
+            else:
+                st.session_state.toast = ("Reglas de fábrica restauradas", "↩️")
+                st.rerun()
 
 
 def _inspector(f: pd.DataFrame, datos: Analizador) -> None:
@@ -806,14 +1210,14 @@ def _inspector(f: pd.DataFrame, datos: Analizador) -> None:
         encontradas = datos.por_id(buscado.strip().lstrip("#"))
         if not encontradas:
             st.warning(f"No hay ninguna incidencia con ID «{buscado.strip()}».")
-        for inc in encontradas:
+        for n, inc in enumerate(encontradas):
             if len(encontradas) > 1:
                 st.caption(f"⚠️ El ID aparece {len(encontradas)} veces en el XML.")
             with st.container(border=True):
-                _ficha(inc)
+                _ficha(inc, f"insp{n}")
     elif elegido is not None and elegido < len(datos.todas):
         with st.container(border=True):
-            _ficha(datos.todas[elegido])
+            _ficha(datos.todas[elegido], "insp_sel")
     else:
         st.info("Busca un ID o elige una incidencia para ver su ficha con la explicación paso "
                 "a paso de por qué se validó o rechazó y por qué recibió esa severidad.",
@@ -877,7 +1281,15 @@ def main() -> None:
         st.caption("También puedes subir un XML desde el menú lateral (☰ / >).")
         return
 
+    reglas = cargar_reglas()
     df = _tabla(ss.clave, datos)
+    try:                                   # Seguimiento: se relee en cada ejecución
+        ss.gestion, ss.error_gestion = GESTOR.todos(), ""
+    except ErrorGestion as error:
+        ss.gestion, ss.error_gestion = {}, str(error)
+    df = df.assign(Reparación=[
+        (g.estado if (g := ss.gestion.get(i)) else ESTADO_GESTION_DEFECTO)
+        if estado == VALIDA else None for i, estado in zip(df["ID"], df["Estado"])])
     hueco_kpis = st.container()
     filtrado = _filtros(df)
     with hueco_kpis:
@@ -887,13 +1299,17 @@ def main() -> None:
         ["📊 Panel", "📋 Incidencias", "🔍 Cómo se categoriza (Auditoría y Reglas)"],
         key="pestana")
     with panel:
-        _panel(filtrado)
+        _panel(filtrado, datos)
     with listado:
         _listado(filtrado, datos)
     with auditoria:
         _inspector(filtrado, datos)
         st.divider()
-        _mapa_reglas(df, datos)
+        _emergentes(filtrado, datos, reglas)
+        st.divider()
+        _editor_reglas(reglas)
+        st.divider()
+        _mapa_reglas(df, datos, reglas)
 
 
 main()

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import NamedTuple
 
 # ══════════════════════════════════════════════════════════════════════════
 # Archivos y rutas
@@ -92,6 +91,9 @@ RE_CAMPO_SEVERIDAD = re.compile(
     r"prioritat|prioridad|severitat|severidad|gravetat|gravedad|urg[eè]nci|impact|criticitat",
     re.I)
 RE_CAMPO_DESCRIPCION = re.compile(r"descripci|detall|detalle|observaci|problema|comentari", re.I)
+RE_CAMPO_AFECTADOS = re.compile(r"afectad|persones|personas", re.I)
+RE_CAMPO_ZONA = re.compile(r"zona|ubicaci|planta|aula|sala|lloc|lugar", re.I)
+RE_CAMPO_CODIGO = re.compile(r"codi|c[oó]digo|identificaci|inventari|serial", re.I)
 RE_CAMPO_CORTO = re.compile(
     r"\b(id|codi|codigo|código|code|equip|equipo|aula|ip|mac|prioritat|prioridad|"
     r"estat|estado|tipus|tipo|marca|model|modelo|host|hostname)\b", re.I)
@@ -114,6 +116,26 @@ RE_BINARIO = re.compile(r"(?:[01]{8}[\s,;]*){3,}")          # 3 bytes o más
 RE_BYTE = re.compile(r"[01]{8}")
 RE_AMARICO = re.compile("[ሀ-᎟ⶀ-⷟꬀-꬯]")   # Bloques etíopes
 RE_BASURA = re.compile("|".join(re.escape(p) for p in PALABRAS_BASURA))
+
+# ── Texto aleatorio tipo Faker ("Cuba ciudad medios ii.") ─────────────────
+# Una o varias micro-frases: Mayúscula inicial, solo palabras en minúscula
+# sin comas, apóstrofos ni cifras, y punto final. Es la huella del
+# generador de texto de Faker; las frases reales casi nunca son así de "planas".
+RE_FRASES_FAKER = re.compile(
+    r"^(?:[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]*(?: [a-záéíóúñü]+)*\.\s*)+$")
+RE_PALABRA = re.compile(r"[^\W\d_]{2,}")              # Palabra de 2+ letras
+# Señales extra que se citan en el motivo del rechazo
+NUMEROS_ROMANOS = {"ii", "iii", "iv", "vi", "vii", "viii", "ix", "xi", "xii"}
+NOMBRES_PROPIOS_FAKER = {
+    "mexico", "cuba", "espana", "argentina", "colombia", "peru", "chile", "venezuela",
+    "europa", "america", "paris", "madrid", "londres", "roma", "francisco", "juan",
+    "maria", "jose", "manuel", "pedro", "jorge", "felipe", "rafael", "martin", "carlos",
+    "antonio", "luis", "garcia", "lopez", "gonzalez", "rodriguez", "fernandez", "martinez",
+    "sanchez", "perez", "fernando", "psoe", "dios", "iglesia",
+}
+MIN_PALABRAS_FAKER = 3        # Por debajo, solo se bloquea si hay señales extra
+MIN_PALABRAS_PROSA = 12       # Prosa sin ninguna palabra técnica = sin sentido
+MIN_PALABRAS_PARRAFO = 25     # Párrafo largo: exige más evidencia técnica (fuerza ≥ 3)
 
 # Valores que en realidad significan "no hay dato" (se comparan normalizados)
 VALORES_NULOS = {"", "-", "--", "—", "n/a", "na", "null", "none", "cap", "ninguna",
@@ -152,52 +174,25 @@ TIPOS_DISPOSITIVO: TablaPatrones = _compilar([
 CATEGORIA_POR_DEFECTO = "Altres"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Marcas conocidas
+# Reglas editables (rules.json)
 # ══════════════════════════════════════════════════════════════════════════
-# 1) Unifican el valor del nodo de marca ("hewlett packard" -> "HP").
-# 2) Si el nodo falta o viene vacío / "-", se buscan en el equipo y la
-#    descripción (también por modelo: ThinkPad -> Lenovo, OptiPlex -> Dell).
+# Las palabras clave de severidad, las marcas, el léxico técnico y el rango
+# de años NO se programan aquí: viven en rules.json (raíz del proyecto) y se
+# pueden editar desde la web. Estos son solo los VALORES DE FÁBRICA con los
+# que app/rules.py genera rules.json si no existe.
+#
+# Formato de las palabras clave: texto normal, sin tildes ni mayúsculas
+# (se normalizan solas). Se buscan al INICIO de palabra, así "impressor"
+# encaja con impressora/impressores y "lent" con lento/lenta. Las MARCAS se
+# buscan como palabra completa ("acer" no encaja con "acerca").
 
-MARCAS_REALES: TablaPatrones = _compilar([
-    ("HP", r"\bh\.?\s?p\b|hewlett|elitebook|probook|laserjet|officejet|deskjet|"
-           r"proliant|pavilion"),
-    ("Dell", r"\bdell\b|latitude|optiplex|inspiron|poweredge|alienware|vostro"),
-    ("Lenovo", r"lenovo|thinkpad|thinkcentre|ideapad"),
-    ("Apple", r"\bapple\b|macbook|\bimac\b|mac mini|\bipad\b|iphone"),
-    ("Asus", r"\basus\b|zenbook|vivobook"),
-    ("Acer", r"\bacer\b|aspire|travelmate"),
-    ("MSI", r"\bmsi\b"),
-    ("Samsung", r"samsung|galaxy"),
-    ("Microsoft", r"microsoft|\bsurface\b"),
-    ("Toshiba", r"toshiba|dynabook"),
-    ("Fujitsu", r"fujitsu"),
-    ("Cisco", r"\bcisco\b|catalyst|meraki"),
-    ("TP-Link", r"tp-?link"),
-    ("Ubiquiti", r"ubiquiti|unifi"),
-    ("Netgear", r"netgear"),
-    ("Epson", r"epson"),
-    ("Brother", r"\bbrother\b"),
-    ("Canon", r"\bcanon\b"),
-    ("Xerox", r"xerox"),
-    ("Ricoh", r"ricoh"),
-    ("Kyocera", r"kyocera"),
-    ("Logitech", r"logitech"),
-    ("Ugreen", r"ugreen"),
-    ("Digitus", r"digitus"),
-    ("LG", r"\blg\b"),
-    ("BenQ", r"benq"),
-    ("Huawei", r"huawei"),
-    ("Xiaomi", r"xiaomi"),
-])
-
-# ══════════════════════════════════════════════════════════════════════════
-# Severidad
-# ══════════════════════════════════════════════════════════════════════════
+NOMBRE_REGLAS = "rules.json"
+NOMBRE_GESTION = "gestion.json"
 
 NIVELES = ["Crítica", "Alta", "Media", "Leve"]
 SEVERIDAD_POR_DEFECTO = "Media"   # Sin pistas: mejor no infravalorar
 
-# 1) Si el XML tiene un campo de prioridad/severidad, se traduce su valor
+# Si el XML trae un campo de prioridad/severidad, se traduce su valor (Paso 0)
 MAPA_SEVERIDAD: TablaPatrones = _compilar([
     ("Crítica", r"critic|urgent|bloquejant|bloqueante|maxim"),
     ("Alta", r"\balt[ae]?\b|high|elevad|important"),
@@ -205,68 +200,207 @@ MAPA_SEVERIDAD: TablaPatrones = _compilar([
     ("Leve", r"baix|baj|leve|lleu|low|menor|minim"),
 ])
 
-# 2) Si no lo tiene, se deduce por palabras clave sobre la descripción, el
-#    equipo y su categoría (texto normalizado: sin tildes ni mayúsculas).
-#    Orden de decisión (ver validator.Clasificador.severidad):
-#      1. CRÍTICA  -> servidores y red general (servidor, BD, router/switch, xarxa caiguda...)
-#      2. ALTA     -> hardware crítico del equipo (disco, BSOD, placa base...)
-#      3. LEVE     -> periféricos (teclat, ratolí, cables, altaveus, impressora)
-#      4. ALTA     -> "no arrenca" / "no s'encén", si NO es un periférico
-#      5. MEDIA    -> software o errores genéricos ("no funciona", "programari"...)
-#      6. Sin pistas -> SEVERIDAD_POR_DEFECTO
-#    Así "No funciona el teclat" es LEVE (paso 3 antes que el 5) y
-#    "No arrenca l'ordinador" es ALTA.
-RE_SEV_CRITICA = re.compile(
-    r"servidor|server|\bsrv\b|\bsrv-|base de dades|base de datos|database|\bbbdd\b|"
-    r"xarxa caiguda|caiguda de (la )?xarxa|red caida|caida de (la )?red|"
-    r"\brouter\b|\bswitch\b|commutador|encaminador|firewall|"
-    r"\bcpd\b|tota la xarxa|toda la red|tot l.institut|todo el centro|ransomware")
-RE_SEV_ALTA_HW = re.compile(
-    r"disc dur|disco duro|\bssd\b|\bhdd\b|pantalla (blava|azul)|\bbsod\b|blue ?screen|"
-    r"pantallazo|placa (base|mare)|motherboard|font d.alimentacio|fuente de alimentacion|"
-    r"memoria ram|sobreescalf|sobrecalent|cremat|quemad|virus|malware")
-RE_SEV_ALTA_ARRANQUE = re.compile(
-    r"no (arrenca|arranca|engega|encen|enciende|inicia)|no s.encen|no se enciende|"
-    r"pantalla negra")
-RE_SEV_LEVE = re.compile(
-    r"perifer|teclat|teclado|ratoli|raton|mouse|cable|altaveu|altavoz|auricular|webcam|"
-    r"impres?sor|printer|toner|tinta|\bpaper\b|\bpapel\b|alfombreta|\busb\b")
-RE_SEV_MEDIA = re.compile(
-    r"no funciona|no (respon|responde)|error|falla|bloquejad|bloquejat|bloquead|penjat|"
-    r"se cuelga|es penja|\blent|lento|pantalla secundaria|segona pantalla|"
-    r"segunda pantalla|programa|aplicacio|software|actualitz|actualiz|contrasenya|"
-    r"password|reinici|intermitent|sense connexio|sin conexion|wifi")
+REGLAS_POR_DEFECTO: dict = {
+    "version": 1,
+    "anyos": {
+        "minimo": 2000,         # Años anteriores = fecha imposible
+        "maximo": None,         # None / 0 = el año actual
+    },
+    "severidad": {
+        # ── CRÍTICA: exige CONTEXTO de caída en la descripción ────────────
+        # Caídas generales: bastan por sí solas
+        "critica_caida_general": [
+            "xarxa caiguda", "caiguda de la xarxa", "caiguda de xarxa", "red caida",
+            "caida de la red", "tall general", "corte general", "apagada general",
+            "caiguda general", "caida general", "ransomware",
+        ],
+        # Síntomas de caída/daño grave: Crítica solo si afectan a infraestructura
+        # o a varios usuarios/plantas (si no, deciden los pasos siguientes)
+        "critica_caida": [
+            "caigut", "caiguda", "caido", "caida", "sense connexio", "sin conexion",
+            "sense xarxa", "sin red", "sense internet", "sin internet", "no hi ha internet",
+            "no hay internet", "no hi ha xarxa", "no respon", "no responde", "inaccessible",
+            "inaccesible", "cremat", "quemad", "fum", "humo", "perden la connexio",
+            "pierden la conexion", "perd la connexio", "interromp la connexio",
+            "no obtenen una adreca ip", "no obtienen ip", "sense ip", "sin ip",
+            "deixat de funcionar", "dejado de funcionar",
+        ],
+        # Equipos de infraestructura compartida
+        "critica_infraestructura": [
+            "servidor", "server", "srv", "router", "switch", "commutador", "encaminador",
+            "firewall", "tallafoc", "cpd", "base de dades", "base de datos", "database",
+            "bbdd", "punt d'acces", "punto de acceso", "access point",
+        ],
+        # Expresiones de impacto multiusuario en la descripción
+        "critica_multiusuario": [
+            "tota la xarxa", "toda la red", "tot l'institut", "todo el centro",
+            "tot l'edifici", "todo el edificio", "tota la planta", "toda la planta",
+            "totes les plantes", "todas las plantas", "tota l'empresa", "toda la empresa",
+            "tota l'oficina", "tothom", "todo el mundo", "tots els usuaris",
+            "todos los usuarios", "tot el departament", "todo el departamento",
+            "diversos usuaris", "varios usuarios",
+        ],
+        # Valores del campo «Quantes persones estan afectades» que indican impacto amplio
+        "afectados_multiples": [
+            "mes de 10", "mas de 10", "tot el departament", "todo el departamento",
+            "tota l'organitzacio", "toda la organizacion",
+        ],
+        # ── ALTA ──────────────────────────────────────────────────────────
+        "alta_hardware": [
+            "disc dur", "disco duro", "ssd", "hdd", "pantalla blava", "pantalla azul",
+            "bsod", "blue screen", "bluescreen", "pantallazo", "placa base", "placa mare",
+            "motherboard", "font d'alimentacio", "fuente de alimentacion", "memoria ram",
+            "sobreescalf", "sobrecalent", "cremat", "quemad", "fum", "humo", "virus",
+            "malware",
+        ],
+        "alta_arranque": [
+            "no arrenca", "no arranca", "no engega", "no encen", "no enciende", "no inicia",
+            "no s'encen", "no se enciende", "no arriba a iniciar", "no llega a iniciar",
+            "pantalla negra",
+        ],
+        # ── LEVE ──────────────────────────────────────────────────────────
+        "leve_perifericos": [
+            "perifer", "teclat", "teclado", "ratoli", "raton", "mouse", "cable", "altaveu",
+            "altavoz", "auricular", "webcam", "impressor", "impresor", "printer", "toner",
+            "tinta", "paper", "papel", "alfombreta", "usb",
+        ],
+        # ── MEDIA ─────────────────────────────────────────────────────────
+        "media_generico": [
+            "no funciona", "no respon", "no responde", "error", "falla", "bloquejad",
+            "bloquejat", "bloquead", "penjat", "se cuelga", "es penja", "lent", "lento",
+            "pantalla secundaria", "segona pantalla", "segunda pantalla", "programa",
+            "aplicacio", "software", "actualitz", "actualiz", "contrasenya", "password",
+            "reinici", "intermitent", "sense connexio", "sin conexion", "wifi",
+        ],
+    },
+    # Marca canónica -> alias (palabra completa). El primer alias que encaja gana.
+    "marcas": {
+        "HP": ["hp", "h.p", "h p", "hewlett", "hewlett packard", "elitebook", "probook",
+               "laserjet", "officejet", "deskjet", "proliant", "pavilion"],
+        "Dell": ["dell", "latitude", "optiplex", "inspiron", "poweredge", "alienware", "vostro"],
+        "Lenovo": ["lenovo", "thinkpad", "thinkcentre", "ideapad"],
+        "Apple": ["apple", "macbook", "imac", "mac mini", "ipad", "iphone"],
+        "Asus": ["asus", "zenbook", "vivobook"],
+        "Acer": ["acer", "aspire", "travelmate"],
+        "MSI": ["msi"],
+        "Samsung": ["samsung", "galaxy"],
+        "Microsoft": ["microsoft", "surface"],
+        "Toshiba": ["toshiba", "dynabook"],
+        "Fujitsu": ["fujitsu"],
+        "Cisco": ["cisco", "catalyst", "meraki"],
+        "TP-Link": ["tp-link", "tplink", "tp link"],
+        "Ubiquiti": ["ubiquiti", "unifi"],
+        "Netgear": ["netgear"],
+        "Epson": ["epson"],
+        "Brother": ["brother"],
+        "Canon": ["canon"],
+        "Xerox": ["xerox"],
+        "Ricoh": ["ricoh"],
+        "Kyocera": ["kyocera"],
+        "Logitech": ["logitech"],
+        "Ugreen": ["ugreen"],
+        "Digitus": ["digitus"],
+        "LG": ["lg"],
+        "BenQ": ["benq"],
+        "Huawei": ["huawei"],
+        "Xiaomi": ["xiaomi"],
+    },
+    # Léxico que demuestra intención técnica en la descripción (filtro anti-Faker)
+    "lexico_tecnico": {
+        # Verbos y síntomas de avería: cuentan doble
+        "sintomas": [
+            "no funciona", "no funcionen", "no funcionan", "no me funciona", "no em funciona",
+            "no le funciona", "no li funciona", "no nos funciona", "no ens funciona",
+            "no me va", "no em va", "no me deja", "no em deixa", "no me arranca",
+            "no m'arrenca", "no me enciende", "no m'encen", "no me carga", "no em carrega",
+            "no me imprime", "no m'imprimeix", "no me abre", "no m'obre",
+            "no va", "no respon", "no responde", "no encen", "no s'encen",
+            "no enciende", "no se enciende", "no arrenca", "no arranca", "no inicia",
+            "no s'obre", "no obre", "no se abre", "no abre", "no carrega", "no carga",
+            "no imprimeix", "no imprime", "no connecta", "no conecta", "no detecta",
+            "no reconeix", "no reconoce", "no mostra", "no muestra", "no permet",
+            "no deixa", "no rep", "no reu", "no llegan", "no arriba", "no hi ha",
+            "error", "errada", "falla", "fallo", "avaria", "averia", "trencat", "trencada",
+            "roto", "rota", "espatllat", "lent", "lento", "lenta", "bloquejat",
+            "bloquejada", "bloquead", "penjat", "penja", "se cuelga", "es tanca",
+            "se cierra", "es reinicia", "se reinicia", "reinici", "tarda", "triga",
+            "parpelleja", "parpadea", "soroll", "ruido", "sobreescalf", "calent",
+            "cremat", "quemad", "fum", "humo", "virus", "malware", "caigut", "caiguda",
+            "caido", "caida", "sense connexio", "sin conexion", "sense internet",
+            "sin internet", "desconnect", "desconect", "intermitent", "not working",
+            "doesn't work", "broken", "crash", "slow", "freez", "won't", "no signal",
+            "encallat", "encallad", "atasca", "atascad", "apagad", "s'apaga", "se apaga",
+            "no s'imprimeix", "no emet", "no escriu", "no registra", "no es mou",
+            "no desplaca", "desenfocad", "parpelleja", "es perd", "perden", "se pierde",
+            "pierden", "interromp",
+            "no obtenen", "no obtiene", "no s'estableix", "deixat de funcionar",
+            "deixa de funcionar", "dejado de funcionar", "sense senyal", "sin senal",
+            "tall visible", "exposat",
+        ],
+        # Dispositivos y conceptos informáticos
+        "dispositivos": [
+            "ordinador", "ordenador", "portatil", "pc", "pantalla", "monitor", "teclat",
+            "teclado", "ratoli", "raton", "mouse", "impressor", "impresor", "imprimir",
+            "printer", "escaner", "wifi", "xarxa", "internet", "router", "switch", "cable",
+            "usb", "servidor", "programa", "programari", "aplicacio", "aplicacion",
+            "software", "navegador", "correu", "correo", "email", "e-mail", "compte d'usuari",
+            "contrasenya", "contrasena", "password", "sistema operatiu", "sistema operativo",
+            "windows", "office", "excel", "pdf", "fitxer", "arxiu", "archivo", "disc dur",
+            "disco duro", "ssd", "memoria", "bateria", "carregador", "cargador", "altaveu",
+            "auricular", "webcam", "projector", "proyector", "imatge", "telefon", "mobil",
+            "tauleta", "tablet", "toner", "tinta", "llicencia", "licencia", "actualitzaci",
+            "actualizaci", "driver", "controlador", "bios", "display", "screen",
+            "computer", "laptop", "keyboard", "network", "graphics", "displayport",
+            "hdmi", "vga", "bluetooth", "ip", "adreca ip", "tecla", "cursor", "impressio",
+            "alimentacio", "audio", "enllac", "connexio", "conexion", "senyal", "senal",
+            "dispositiu", "dispositivo", "equip de xarxa", "ram",
+        ],
+    },
+}
 
-
-class ReglaSeveridad(NamedTuple):
-    """Un paso del motor de severidad (la primera regla que encaja decide)."""
-    paso: int
-    nivel: str
-    titulo: str
-    descripcion: str
-    patron: re.Pattern[str]
-
-
-# Orden EXACTO de decisión. Comprobar "periférico" antes que "no arranca"
-# equivale a "no arranca -> Alta solo si NO es periférico".
-REGLAS_SEVERIDAD: list[ReglaSeveridad] = [
-    ReglaSeveridad(1, "Crítica", "Servidores y red general",
-                   "Caída de servicios compartidos: afecta a muchos usuarios a la vez.",
-                   RE_SEV_CRITICA),
-    ReglaSeveridad(2, "Alta", "Hardware crítico del equipo",
-                   "Avería física o de seguridad que deja el equipo inutilizable o en riesgo.",
-                   RE_SEV_ALTA_HW),
-    ReglaSeveridad(3, "Leve", "Periféricos y consumibles",
-                   "Teclado, ratón, cables, impresora...: molesto pero con alternativa fácil. "
-                   "Se comprueba ANTES que «no arranca»: «no arrenca la impressora» es Leve.",
-                   RE_SEV_LEVE),
-    ReglaSeveridad(4, "Alta", "El equipo no arranca",
-                   "El ordenador no enciende o se queda en negro (si no es un periférico).",
-                   RE_SEV_ALTA_ARRANQUE),
-    ReglaSeveridad(5, "Media", "Software o error genérico",
-                   "Programas, contraseñas, lentitud, cortes intermitentes, «no funciona»...",
-                   RE_SEV_MEDIA),
+# Metadatos legibles de cada paso del motor de severidad (para la web).
+# Las listas que usa cada paso se leen de rules.json.
+PASOS_SEVERIDAD: list[dict] = [
+    {"paso": 1, "nivel": "Crítica", "titulo": "Caída de infraestructura o corte general",
+     "descripcion": "Solo si la DESCRIPCIÓN habla de caída o daño grave: una caída general "
+                    "basta; un síntoma de caída exige además equipo de infraestructura "
+                    "(servidor, router…) o impacto multiusuario. Un router con un fallo "
+                    "menor NO es Crítica.",
+     "listas": ["critica_caida_general", "critica_caida", "critica_infraestructura",
+                "critica_multiusuario"]},
+    {"paso": 2, "nivel": "Alta", "titulo": "Hardware crítico del equipo",
+     "descripcion": "Avería física o de seguridad que deja el equipo inutilizable o en riesgo.",
+     "listas": ["alta_hardware"]},
+    {"paso": 3, "nivel": "Alta", "titulo": "Infraestructura con impacto multiusuario",
+     "descripcion": "Equipo de infraestructura que afecta a varias personas (campo de "
+                    "afectados o descripción) pero sin caída descrita.",
+     "listas": ["critica_infraestructura", "afectados_multiples", "critica_multiusuario"]},
+    {"paso": 4, "nivel": "Leve", "titulo": "Periféricos y consumibles",
+     "descripcion": "Teclado, ratón, cables, impresora…: molesto pero con alternativa fácil. "
+                    "Va ANTES que «no arranca»: «no arrenca la impressora» es Leve.",
+     "listas": ["leve_perifericos"]},
+    {"paso": 5, "nivel": "Alta", "titulo": "El equipo no arranca",
+     "descripcion": "El ordenador no enciende, no carga el sistema o se queda en negro.",
+     "listas": ["alta_arranque"]},
+    {"paso": 6, "nivel": "Media", "titulo": "Software o error genérico",
+     "descripcion": "Programas, contraseñas, lentitud, cortes intermitentes, «no funciona»…",
+     "listas": ["media_generico"]},
 ]
+
+# Nombre legible de cada lista editable (editor de reglas de la web)
+ETIQUETAS_LISTAS: dict[str, str] = {
+    "critica_caida_general": "Crítica · Caídas generales (bastan solas)",
+    "critica_caida": "Crítica · Síntomas de caída / daño grave",
+    "critica_infraestructura": "Crítica · Equipos de infraestructura",
+    "critica_multiusuario": "Crítica · Impacto multiusuario (descripción)",
+    "afectados_multiples": "Crítica · Valores de «personas afectadas» que cuentan como muchas",
+    "alta_hardware": "Alta · Hardware crítico",
+    "alta_arranque": "Alta · No arranca",
+    "leve_perifericos": "Leve · Periféricos y consumibles",
+    "media_generico": "Media · Software y errores genéricos",
+    "sintomas": "Léxico técnico · Síntomas de avería (cuentan doble)",
+    "dispositivos": "Léxico técnico · Dispositivos y conceptos",
+}
 
 # ══════════════════════════════════════════════════════════════════════════
 # Categorías de anomalía (opciones del filtro)
@@ -276,7 +410,8 @@ CAT_FECHA = "Fechas imposibles"
 CAT_BASURA = "Contenido basura"
 CAT_DESBORDE = "Desbordamiento de texto"
 CAT_VACIO = "Campos vacíos / incompletos"
-CATEGORIAS = [CAT_FECHA, CAT_BASURA, CAT_DESBORDE, CAT_VACIO]
+CAT_SIN_SENTIDO = "Texto aleatorio / sin sentido"
+CATEGORIAS = [CAT_FECHA, CAT_BASURA, CAT_SIN_SENTIDO, CAT_DESBORDE, CAT_VACIO]
 
 # Nombre corto de cada tipo de anomalía (gráficos y fichas de auditoría)
 TIPO_ANOMALIA: dict[str, str] = {
@@ -284,11 +419,16 @@ TIPO_ANOMALIA: dict[str, str] = {
     CAT_VACIO: "Campo vacío",
     CAT_BASURA: "Spam / Contenido basura",
     CAT_DESBORDE: "Desbordamiento",
+    CAT_SIN_SENTIDO: "Texto aleatorio / Sin sentido",
 }
 
 # ══════════════════════════════════════════════════════════════════════════
 # Fechas escritas por el usuario y nombres de meses
 # ══════════════════════════════════════════════════════════════════════════
+
+# Auto-reparación: fechas alternativas que se reescriben como DD/MM/AAAA
+RE_FECHA_REPARABLE_ISO = re.compile(r"^\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\s*$")   # AAAA-MM-DD
+RE_FECHA_REPARABLE_EU = re.compile(r"^\s*(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\s*$")   # DD.MM.AAAA
 
 RE_FECHA_ISO = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$")    # AAAA-MM-DD
 RE_FECHA_EU = re.compile(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$")     # DD/MM/AAAA
@@ -310,3 +450,42 @@ COLOR_SEVERIDAD = {"Crítica": NEON_ROJO, "Alta": NEON_NARANJA,
                    "Media": NEON_AMARILLO, "Leve": NEON_VERDE}
 SPARK = "▁▂▃▄▅▆▇█"
 BLOQUES_PARCIALES = " ▏▎▍▌▋▊▉"
+
+# ══════════════════════════════════════════════════════════════════════════
+# Analítica avanzada
+# ══════════════════════════════════════════════════════════════════════════
+
+VENTANA_RECIENTE_DIAS = 30        # "Recientes" = últimos N días del dataset
+MIN_FALLOS_REINCIDENTE = 3        # Mismo equipo con N fallos en total -> reincidente
+MIN_FALLOS_CRONICO = 10           # N fallos en total -> crónico...
+MIN_FALLOS_VENTANA = 3            # ... o N fallos en los últimos 90 días -> crónico
+TENDENCIA_CALIENTE = 1.3          # Zona con un 30 % más de fallos de lo habitual
+TENDENCIA_VIGILAR = 1.1
+
+# Palabras vacías (español + catalán + restos de apóstrofos) para la minería
+STOPWORDS: frozenset[str] = frozenset("""
+a al algo algun alguna algunas alguno algunos ante antes aquel aquella aquellas aquellos aqui
+asi aun aunque bajo bien cada casi como con contra cual cuales cuando de del desde donde dos
+el ella ellas ello ellos en entre era eran es esa esas ese eso esos esta estaba estado estan
+estar estas este esto estos fue fueron ha haber habia han hasta hay la las le les lo los mas
+me mi mientras mis muy nada ni no nos o os otra otras otro otros para pero poco por porque que
+quien se ser si sido sin sobre son su sus tambien tan tanto te tiene tienen todo todos tu un
+una uno unos ya yo
+als amb aquest aquesta aquests aquestes aqui cap ell ella elles ells els em en encara era es
+esta estan esta fa ha han hi ho i jo la les li lo mes meu molt nosaltres o pel per pero perque
+pels quan que qui se sense ser seu seva ses si sobre son tambe te tot tota tots totes un una
+uns unes va van vaig dels al d l s n m t
+""".split())
+
+# Palabras de relleno de los formularios que no aportan nada como "problema nuevo"
+MINERIA_IGNORAR: frozenset[str] = frozenset("""
+problema persisteix reiniciat reiniciar provat encara mentre durant despres dins quan
+ordinador ordenador equip usuari usuaria intenta intentat sempre algun alguns moment
+""".split())
+
+# ══════════════════════════════════════════════════════════════════════════
+# Seguimiento de reparaciones (gestion.json)
+# ══════════════════════════════════════════════════════════════════════════
+
+ESTADOS_GESTION = ["Pendiente", "En curso", "Resuelta"]
+ESTADO_GESTION_DEFECTO = "Pendiente"

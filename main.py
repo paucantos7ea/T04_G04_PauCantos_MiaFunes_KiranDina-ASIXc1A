@@ -7,7 +7,8 @@ Uso (desde cualquier carpeta y en cualquier sistema operativo):
     python main.py                          # busca respotes.xml / incidencies.xml
     python main.py --file ruta/al/archivo.xml
     python ruta/al/proyecto/main.py -f datos.xml
-    python main.py --web                    # interfaz web (Chrome en PC y móvil)
+    python main.py --web                    # web + túnel público con QR (cualquier red)
+    python main.py --web --sin-tunel        # web solo en la red local
     python main.py --web --port 8502 -f datos.xml
 
 La interfaz web también se puede lanzar directamente con Streamlit:
@@ -44,13 +45,23 @@ DEPENDENCIAS_WEB = ("rich", "streamlit", "plotly")
 PUERTO_WEB = 8501
 
 
+def forzar_utf8() -> None:
+    """UTF-8 en stdout/stderr antes de imprimir NADA (incluida la ayuda de --help),
+    para que las tildes no rompan en consolas antiguas de Windows o salidas redirigidas."""
+    for flujo in (sys.stdout, sys.stderr):
+        try:
+            flujo.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def dependencias_ok(modulos: tuple[str, ...] = DEPENDENCIAS) -> bool:
     """Comprueba las librerías antes de importarlas (mensaje claro, sin traceback)."""
     faltan = [m for m in modulos if importlib.util.find_spec(m) is None]
     if faltan:
         requisitos = RAIZ_PROYECTO / "requirements.txt"
         print(f"Faltan dependencias: {', '.join(faltan)}\n"
-              f"Instalalas con:\n    python -m pip install -r \"{requisitos}\"",
+              f"Instálalas con:\n    python -m pip install -r \"{requisitos}\"",
               file=sys.stderr)
         return False
     return True
@@ -71,7 +82,13 @@ def crear_parser() -> argparse.ArgumentParser:
                         help=f"puerto de la interfaz web (por defecto {PUERTO_WEB})")
     parser.add_argument("--clave", metavar="TEXTO",
                         help="con --web: contraseña para entrar en la web "
-                             "(también: variable de entorno MONITOR_CLAVE)")
+                             "(mejor: variable de entorno MONITOR_CLAVE, no queda en el historial)")
+    parser.add_argument("--tunel", default="auto",
+                        choices=["auto", "cloudflared", "ngrok", "localtunnel"],
+                        help="con --web: herramienta de túnel público (por defecto, la primera "
+                             "disponible)")
+    parser.add_argument("--sin-tunel", action="store_true",
+                        help="con --web: solo red local, sin URL pública")
     return parser
 
 
@@ -115,10 +132,13 @@ def puerto_libre(desde: int, intentos: int = 20) -> int:
 
 
 def lanzar_web(args: argparse.Namespace) -> int:
-    """Arranca `streamlit run web.py` escuchando en toda la red local."""
+    """Arranca `streamlit run web.py` en la red local y, salvo --sin-tunel, un
+    túnel público HTTPS con su código QR para abrirla desde cualquier red."""
+    from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
 
+    from app.tunel import ErrorTunel, abrir_tunel, qr_ascii
     from app.ui.console import obtener_consola, panel_error
     from app.utils import limpiar_ruta
 
@@ -131,25 +151,6 @@ def lanzar_web(args: argparse.Namespace) -> int:
     puerto = puerto_libre(args.port)
     ip = ip_local()
     clave = args.clave or os.environ.get("MONITOR_CLAVE", "")
-    texto = Text()
-    texto.append("Abre en Google Chrome:\n\n", style="bold")
-    texto.append("  💻 PC (este equipo)       ", style="dim")
-    texto.append(f"http://localhost:{puerto}\n", style="bold cyan underline")
-    texto.append("  📱 Móvil (misma Wi-Fi)    ", style="dim")
-    texto.append(f"http://{ip}:{puerto}\n\n", style="bold green underline")
-    if puerto != args.port:
-        texto.append(f"El puerto {args.port} estaba ocupado: se usa el {puerto}.\n", style="yellow")
-    if ip == "127.0.0.1":
-        texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
-                     style="yellow")
-    texto.append("Desde cualquier red: publícala en Streamlit Community Cloud (ver README).\n",
-                 style="dim")
-    if clave:
-        texto.append("🔒 Protegido con contraseña.\n", style="green")
-    texto.append("Ctrl+C detiene el servidor.", style="dim")
-    consola.print(Panel(texto, title="[bold]🌐 Monitor web de incidencias[/]",
-                        border_style="cyan", expand=False, padding=(1, 2)))
-
     comando = [sys.executable, "-m", "streamlit", "run", str(web),
                "--server.address", "0.0.0.0", "--server.port", str(puerto),
                "--server.headless", "true", "--browser.gatherUsageStats", "false"]
@@ -157,11 +158,76 @@ def lanzar_web(args: argparse.Namespace) -> int:
         comando += ["--", "--file", str(limpiar_ruta(args.file))]
     entorno = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     if clave:
-        entorno["MONITOR_CLAVE"] = clave  # Por entorno: no aparece en la lista de procesos
+        entorno["MONITOR_CLAVE"] = clave  # La web la lee del entorno, no de su línea de comandos
+
     try:
-        return subprocess.call(comando, env=entorno)
-    except KeyboardInterrupt:             # Ctrl+C: Streamlit ya se cierra solo
+        servidor = subprocess.Popen(comando, env=entorno)
+    except OSError as error:
+        consola.print(panel_error("No se ha podido arrancar Streamlit", str(error)))
+        return 1
+
+    tunel, error_tunel = None, None
+    try:
+        if not args.sin_tunel:
+            with consola.status("[cyan]Abriendo túnel público (acceso desde cualquier red)…[/]",
+                                spinner="dots"):
+                try:
+                    tunel = abrir_tunel(puerto, args.tunel)
+                except ErrorTunel as error:
+                    error_tunel = str(error)
+
+        texto = Text()
+        texto.append("Abre en Google Chrome:\n\n", style="bold")
+        texto.append("  PC (este equipo)        ", style="dim")
+        texto.append(f"http://localhost:{puerto}\n", style="bold cyan underline")
+        texto.append("  Móvil (misma Wi-Fi)     ", style="dim")
+        texto.append(f"http://{ip}:{puerto}\n", style="bold green underline")
+        if tunel:
+            texto.append("  Cualquier red (4G/5G)   ", style="dim")
+            texto.append(f"{tunel.url}\n", style="bold magenta underline")
+            texto.append(f"                          vía {tunel.proveedor}", style="dim")
+            if tunel.proveedor == "localtunnel":
+                texto.append(" (la 1.ª vez pide la IP pública de este PC como contraseña)",
+                             style="dim")
+            texto.append("\n")
+        texto.append("\n")
+        if puerto != args.port:
+            texto.append(f"El puerto {args.port} estaba ocupado: se usa el {puerto}.\n",
+                         style="yellow")
+        if ip == "127.0.0.1":
+            texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
+                         style="yellow")
+        if clave:
+            texto.append("Protegido con contraseña.\n", style="green")
+        elif tunel:
+            texto.append("⚠ La URL pública la puede abrir CUALQUIERA que la tenga: protégela "
+                         "con --clave TEXTO (o la variable MONITOR_CLAVE).\n", style="bold red")
+        texto.append("Ctrl+C detiene el servidor" + (" y el túnel." if tunel else "."),
+                     style="dim")
+
+        bloques: list = [texto]
+        if tunel and (qr := qr_ascii(tunel.url)):
+            bloques += [Text("\nEscanea con la cámara del móvil:", style="bold"),
+                        Text(qr, no_wrap=True, overflow="crop")]
+        elif tunel:
+            bloques.append(Text("\n(Instala «qrcode» para ver aquí el código QR.)", style="dim"))
+        consola.print(Panel(Group(*bloques), title="[bold]Monitor web de incidencias[/]",
+                            border_style="cyan", expand=False, padding=(1, 2)))
+        if error_tunel:
+            consola.print(Panel(Text(error_tunel), title="[bold yellow]Sin acceso externo[/]",
+                                border_style="yellow", expand=False, padding=(1, 2)))
+        return servidor.wait()
+    except KeyboardInterrupt:             # Ctrl+C: se cierra todo limpiamente
         return 0
+    finally:
+        if tunel:
+            tunel.cerrar()
+        if servidor.poll() is None:
+            servidor.terminate()
+            try:
+                servidor.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                servidor.kill()
 
 
 def localizar_xml(argumento: str | None) -> tuple[Path | None, str | None]:
@@ -195,6 +261,7 @@ def localizar_xml(argumento: str | None) -> tuple[Path | None, str | None]:
 
 def main(argv: list[str] | None = None) -> int:
     """Bucle principal protegido: ninguna excepción llega al usuario como traceback."""
+    forzar_utf8()
     args = crear_parser().parse_args(argv)
     if args.web:
         return lanzar_web(args) if dependencias_ok(DEPENDENCIAS_WEB) else 1

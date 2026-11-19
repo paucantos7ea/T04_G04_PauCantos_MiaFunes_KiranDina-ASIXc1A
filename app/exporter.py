@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Exportación de las incidencias válidas a JSON (sin interfaz: solo E/S)."""
+"""Exportaciones sin interfaz: JSON de válidas, XML limpio y CSV de cuarentena."""
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from app.config import ETIQUETA_CAMPO, ETIQUETA_INCIDENCIA, ETIQUETA_RAIZ
 from app.models import ErrorExportacion, Incidencia
 
 
@@ -64,3 +68,50 @@ def fusionar(existentes: list[Any], nuevos: list[dict[str, str]]) -> tuple[list[
             ids.add(str(registro["id"]))
             anadidos += 1
     return existentes, anadidos
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# XML limpio y cuarentena
+# ══════════════════════════════════════════════════════════════════════════
+
+NOMBRE_XML_LIMPIO = "respotes_limpio.xml"
+NOMBRE_CUARENTENA = "cuarentena.csv"
+COLUMNAS_CUARENTENA = ["id", "tipo_anomalia", "campo_afectado", "regla", "motivo",
+                       "valor_detectado", "auto_reparada"]
+
+
+def xml_limpio(validas: list[Incidencia]) -> bytes:
+    """respotes_limpio.xml: misma estructura que el original, solo con las
+    incidencias VÁLIDAS y con los valores ya auto-reparados.
+
+        <incidencies>
+          <incidencia id="...">
+            <camp nom="...">valor</camp>   (o <camp nom="..." /> si venía vacío)
+    """
+    raiz = ET.Element(ETIQUETA_RAIZ)
+    for inc in validas:
+        if not inc.valida:                    # Defensa: nunca se cuela una bloqueada
+            continue
+        nodo = ET.SubElement(raiz, ETIQUETA_INCIDENCIA, id=inc.id)
+        for nombre in inc.orden or [*inc.campos, *inc.vacios]:
+            camp = ET.SubElement(nodo, ETIQUETA_CAMPO, nom=nombre)
+            if valor := inc.campos.get(nombre):
+                camp.text = valor
+    ET.indent(raiz, space="  ")
+    return ET.tostring(raiz, encoding="utf-8", xml_declaration=True) + b"\n"
+
+
+def cuarentena_csv(anomalas: list[Incidencia]) -> bytes:
+    """cuarentena.csv: una fila por regla incumplida (id, campo y motivo exacto).
+
+    Codificado en UTF-8 con BOM para que Excel muestre bien las tildes.
+    """
+    salida = io.StringIO(newline="")
+    escritor = csv.writer(salida)
+    escritor.writerow(COLUMNAS_CUARENTENA)
+    for inc in anomalas:
+        for a in inc.anomalias:
+            escritor.writerow([inc.id, a.tipo, a.campo, a.regla, a.motivo_detallado,
+                               " ".join(a.valor.split())[:500],
+                               "sí" if inc.auto_reparada else "no"])
+    return salida.getvalue().encode("utf-8-sig")

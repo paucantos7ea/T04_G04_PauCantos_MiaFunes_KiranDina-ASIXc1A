@@ -3,3 +3,8 @@ __pycache__/
 *.tmp
 .venv/
 venv/
+.pytest_cache/
+# Secretos de Streamlit (contraseña de la web): nunca al repositorio
+.streamlit/secrets.toml
+# Datos de trabajo de los técnicos (se crean al usar la web)
+gestion.json

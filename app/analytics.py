@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from datetime import date
+import re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 
+from app.config import (CATEGORIA_POR_DEFECTO, MIN_FALLOS_CRONICO, MIN_FALLOS_REINCIDENTE,
+                        MIN_FALLOS_VENTANA, TENDENCIA_CALIENTE, TENDENCIA_VIGILAR,
+                        MINERIA_IGNORAR, RE_CAMPO_CODIGO, RE_CAMPO_ZONA, STOPWORDS,
+                        VENTANA_RECIENTE_DIAS)
 from app.models import EstadisticasResumen, Incidencia
 from app.parser import XMLParser
+from app.rules import Reglas
 from app.utils import normalizar
 from app.validator import procesar
 
@@ -123,10 +130,176 @@ class Analizador:
         return self.resumen.por_marca.most_common()
 
 
-def analizar_archivo(ruta: Path, hoy: date | None = None) -> Analizador:
-    """Tubería completa: parsear -> validar/clasificar -> métricas.
+def analizar_archivo(ruta: Path, hoy: date | None = None,
+                     reglas: Reglas | None = None) -> Analizador:
+    """Tubería completa: parsear -> reparar/validar/clasificar -> métricas.
 
     Lanza models.ErrorCarga si el archivo no se puede usar.
     """
     _, incidencias = XMLParser().cargar(ruta)
-    return Analizador(ruta, procesar(incidencias, hoy=hoy))
+    return Analizador(ruta, procesar(incidencias, hoy=hoy, reglas=reglas))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Radar de zonas y equipos reincidentes
+# ══════════════════════════════════════════════════════════════════════════
+
+NIVEL_CRONICO, NIVEL_REINCIDENTE, NIVEL_CALIENTE, NIVEL_VIGILAR, NIVEL_NORMAL = (
+    "🔥 Crónico", "⚠️ Reincidente", "🔥 Punto caliente", "⚠️ Vigilar", "Normal")
+
+
+@dataclass
+class PuntoCaliente:
+    """Una zona o un equipo con su historial de fallos (solo incidencias válidas)."""
+    clave: str
+    tipo: str                       # "Zona" | "Equipo"
+    total: int
+    recientes: int                  # Fallos en la ventana reciente
+    primera: date | None
+    ultima: date | None
+    nivel: str = NIVEL_NORMAL
+    zona: str = ""
+    categoria: str = ""
+    ids: list[str] = field(default_factory=list)
+    tendencia: float = 0.0          # Zonas: ritmo reciente / ritmo histórico
+
+    @property
+    def alerta(self) -> bool:
+        return self.nivel != NIVEL_NORMAL
+
+
+def _valor(inc: Incidencia, patron: re.Pattern[str]) -> str:
+    campo = inc.buscar_campo(patron)
+    return " ".join(campo[1].split()) if campo else ""
+
+
+def fecha_referencia(incidencias: list[Incidencia]) -> date | None:
+    """Fecha desde la que se miden las "ventanas recientes".
+
+    Es el percentil 98 de las fechas válidas, no la máxima: así un par de
+    incidencias sueltas muy posteriores al resto no dejan la ventana vacía.
+    """
+    fechas = sorted(i.fecha for i in incidencias if i.valida and i.fecha)
+    if not fechas:
+        return None
+    return fechas[min(len(fechas) - 1, int(len(fechas) * 0.98))]
+
+
+def _agrupar(incidencias: list[Incidencia], clave, tipo: str,
+             referencia: date | None, ventana: int) -> list[PuntoCaliente]:
+    grupos: dict[str, list[Incidencia]] = defaultdict(list)
+    for inc in incidencias:
+        if inc.valida and (k := clave(inc)):
+            grupos[k].append(inc)
+    desde = referencia - timedelta(days=ventana) if referencia else None
+    puntos = []
+    for k, lista in grupos.items():
+        fechas = sorted(i.fecha for i in lista if i.fecha)
+        recientes = sum(1 for f in fechas if desde and f > desde)
+        puntos.append(PuntoCaliente(
+            k, tipo, len(lista), recientes, fechas[0] if fechas else None,
+            fechas[-1] if fechas else None,
+            zona=Counter(_valor(i, RE_CAMPO_ZONA) for i in lista).most_common(1)[0][0],
+            categoria=Counter(i.tipo for i in lista).most_common(1)[0][0],
+            ids=[i.id for i in lista]))
+    return puntos
+
+
+def radar_zonas(incidencias: list[Incidencia], referencia: date | None = None,
+                ventana: int = VENTANA_RECIENTE_DIAS) -> list[PuntoCaliente]:
+    """Zonas ordenadas por fallos recientes.
+
+    Alerta según la TENDENCIA: fallos en la ventana frente a los que le
+    tocarían a esa zona por su ritmo histórico (1.0 = lo normal; 1.3 = un 30 %
+    más de lo habitual -> punto caliente)."""
+    referencia = referencia or fecha_referencia(incidencias)
+    puntos = _agrupar(incidencias, lambda i: _valor(i, RE_CAMPO_ZONA), "Zona",
+                      referencia, ventana)
+    inicio = min((p.primera for p in puntos if p.primera), default=None)
+    if referencia and inicio:
+        periodo = max(ventana, (referencia - inicio).days + 1)
+        for p in puntos:
+            esperado = p.total * ventana / periodo      # Fallos "normales" en la ventana
+            p.tendencia = p.recientes / esperado if esperado else 0.0
+            if p.recientes >= 3 and p.tendencia >= TENDENCIA_CALIENTE:
+                p.nivel = NIVEL_CALIENTE
+            elif p.recientes >= 3 and p.tendencia >= TENDENCIA_VIGILAR:
+                p.nivel = NIVEL_VIGILAR
+    return sorted(puntos, key=lambda p: (p.recientes, p.total), reverse=True)
+
+
+def equipos_reincidentes(incidencias: list[Incidencia], referencia: date | None = None,
+                         ventana: int = VENTANA_RECIENTE_DIAS * 3,
+                         minimo: int = MIN_FALLOS_REINCIDENTE) -> list[PuntoCaliente]:
+    """Equipos (por código de inventario) con fallos repetidos.
+
+    Crónico: ≥ MIN_FALLOS_CRONICO fallos en total o ≥ MIN_FALLOS_VENTANA en la ventana.
+    Reincidente: ≥ MIN_FALLOS_REINCIDENTE fallos en total.
+    """
+    referencia = referencia or fecha_referencia(incidencias)
+    puntos = _agrupar(incidencias, lambda i: _valor(i, RE_CAMPO_CODIGO).upper(), "Equipo",
+                      referencia, ventana)
+    salida = []
+    for p in puntos:
+        if p.total >= MIN_FALLOS_CRONICO or p.recientes >= MIN_FALLOS_VENTANA:
+            p.nivel = NIVEL_CRONICO
+        elif p.total >= minimo:
+            p.nivel = NIVEL_REINCIDENTE
+        else:
+            continue
+        salida.append(p)
+    return sorted(salida, key=lambda p: (p.nivel == NIVEL_CRONICO, p.recientes, p.total),
+                  reverse=True)
+
+
+def zonas_por_mes(incidencias: list[Incidencia]) -> list[tuple[str, str, int]]:
+    """[(zona, 'AAAA-MM', fallos)] de las válidas: base del mapa de calor."""
+    conteo = Counter((_valor(i, RE_CAMPO_ZONA), f"{i.fecha:%Y-%m}")
+                     for i in incidencias if i.valida and i.fecha and _valor(i, RE_CAMPO_ZONA))
+    return [(z, m, n) for (z, m), n in sorted(conteo.items())]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Minería de palabras en incidencias sin clasificar
+# ══════════════════════════════════════════════════════════════════════════
+
+RE_PALABRA_MINERIA = re.compile(r"[a-z]{3,}")
+
+
+@dataclass
+class Termino:
+    texto: str
+    tipo: str                       # "Palabra" | "Bigrama"
+    incidencias: int                # En cuántas incidencias aparece
+    ejemplo: str = ""
+
+
+def _tokens(texto: str) -> list[str]:
+    limpio = normalizar(texto.replace("\u2019", "'")).replace("'", " ")
+    return [t for t in RE_PALABRA_MINERIA.findall(limpio)
+            if t not in STOPWORDS and t not in MINERIA_IGNORAR]
+
+
+def palabras_emergentes(incidencias: list[Incidencia], patrones_conocidos: list[re.Pattern[str]],
+                        top: int = 15, minimo: int = 2) -> list[Termino]:
+    """Palabras y bigramas frecuentes en las válidas SIN clasificar bien
+    (categoría por defecto o severidad Media) que todavía no son palabra clave
+    de ninguna regla de severidad: candidatos a añadirse a rules.json."""
+    conocida = lambda t: any(p.search(t) for p in patrones_conocidos)  # noqa: E731
+    docs: Counter[tuple[str, str]] = Counter()
+    ejemplos: dict[tuple[str, str], str] = {}
+    for inc in incidencias:
+        if not inc.valida or (inc.tipo != CATEGORIA_POR_DEFECTO and inc.severidad != "Media"):
+            continue
+        tokens = _tokens(inc.descripcion)
+        terminos = {("Palabra", t) for t in tokens}
+        terminos |= {("Bigrama", f"{a} {b}") for a, b in zip(tokens, tokens[1:])}
+        for termino in terminos:
+            docs[termino] += 1
+            ejemplos.setdefault(termino, inc.descripcion)
+    salida = [Termino(texto, tipo, n, ejemplos[(tipo, texto)])
+              for (tipo, texto), n in docs.most_common()
+              if n >= minimo and not conocida(texto)]
+    palabras = [t for t in salida if t.tipo == "Palabra"][:top]
+    bigramas = [t for t in salida if t.tipo == "Bigrama"][:top]
+    return palabras + bigramas

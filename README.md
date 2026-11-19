@@ -1,14 +1,13 @@
 # Escáner de incidencias XML
 
-Aplicación de terminal **y web** que analiza un XML de incidencias (`respotes.xml` / `incidencies.xml`), separa los registros válidos de los anómalos, explica por qué se ha rechazado cada uno y permite explorarlos con filtros, gráficas y exportación a JSON.
+Aplicación de terminal **y web** que analiza un XML de incidencias (`respotes.xml` / `incidencies.xml`), **repara** lo que se puede arreglar, separa los registros válidos de los anómalos (incluido el texto aleatorio generado con Faker), explica por qué se ha rechazado cada uno y permite explorarlos con filtros, gráficas, radar de puntos calientes, seguimiento de reparaciones y exportación a XML limpio, CSV y JSON.
 
 Funciona igual en **Windows, Linux y macOS** y se puede lanzar desde cualquier carpeta.
 
 ## Requisitos
 
-- Python 3.9 o superior
-- Las librerías de `requirements.txt` (`rich`, `questionary` y, para la interfaz web, `streamlit` y `plotly`)
-- La interfaz web necesita Python 3.10 o superior (requisito de Streamlit)
+- Python 3.9 o superior para el menú de terminal; **3.11 o superior para la interfaz web** (requisito de Streamlit 1.67).
+- Las librerías de `requirements.txt`: `rich`, `questionary`, `streamlit`, `plotly`, `pandas`, `qrcode` y `pytest`.
 
 ## Instalación
 
@@ -35,16 +34,16 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
+> **¿«python: no se encontró la orden»?** En muchas distribuciones Linux y en macOS el comando es `python3`, no `python`. En Windows suele ser `python` o `py`. En el resto de esta guía se escribe `python3`.
+
 ## Uso
 
 ```bash
-python main.py                              # busca el XML automáticamente
-python main.py --file datos/incidencies.xml # ruta relativa al directorio actual
-python /ruta/al/proyecto/main.py -f C:\Users\yo\respotes.xml
-python main.py --help
+python3 main.py                              # menú de terminal; busca el XML automáticamente
+python3 main.py --file datos/incidencies.xml # ruta relativa al directorio actual
+python3 main.py --web                        # interfaz web + túnel público con QR
+python3 main.py --help
 ```
-
-En Windows puedes usar `py` en lugar de `python`; en Linux/macOS, `python3`.
 
 **Si no se pasa `--file`**, el programa busca `respotes.xml` o `incidencies.xml`, por este orden:
 
@@ -52,109 +51,200 @@ En Windows puedes usar `py` en lugar de `python`; en Linux/macOS, `python3`.
 2. En la carpeta del proyecto (donde está `main.py`).
 3. Si no lo encuentra, te pide la ruta (puedes escribirla, completarla con Tab o arrastrar el archivo a la terminal) y no continúa hasta que el archivo exista.
 
-### Menú principal
+### Menú de terminal
 
 | Opción | Qué hace |
 |---|---|
 | Incidencias válidas | Listado paginado de las que pasan todas las reglas |
-| Registro de anomalías | Filtra por fechas imposibles, contenido basura, desbordamiento o campos vacíos |
+| Registro de anomalías | Fechas imposibles, contenido basura, texto aleatorio, desbordamiento o campos vacíos |
 | Explorar por severidad | Crítica · Alta · Media · Leve, y entrar a revisar cada nivel |
 | Gráficas de averías | Barras por categoría de equipo, top de equipos y severidad |
-| Filtrar por marca o categoría | Marca leída del XML o deducida por regex; sin marca → por categoría |
+| Filtrar por marca o categoría | Marca leída del XML o deducida; sin marca → por categoría |
 | Filtrar por fechas | Año/mes presentes en los datos o rango `AAAA-MM-DD` |
 | Buscar por texto o ID | ID exacto abre la ficha; si no, busca el texto en todos los campos |
 | Guardar en JSON | Crea o actualiza `incidencies.json` junto al XML (sobrescribir o añadir sin duplicar) |
 
-### Controles de las tablas
+Controles de las tablas: `[N]` siguiente · `[P]` anterior · `[G]` ir a una página · `[I]` ficha detallada por ID · `[Q]` volver. `Ctrl+C` cierra el programa limpiamente en cualquier momento.
 
-`[N]` siguiente · `[P]` anterior · `[G]` ir a una página · `[I]` ficha detallada por ID · `[Q]` volver
+## Cómo decide el motor
 
-`Ctrl+C` cierra el programa limpiamente en cualquier momento.
+### 1. Auto-reparación (antes de validar)
 
-### Severidad
+Lo que se puede corregir sin inventar datos se corrige y queda anotado en la ficha de la incidencia (🔧):
 
-| Nivel | Cuándo |
+- Fechas `AAAA-MM-DD`, `DD.MM.AAAA`, `DD-MM-AAAA` o `D/M/AAAA` → `DD/MM/AAAA`, **solo** si es una fecha real dentro del rango de años permitido.
+- Espacios duplicados, tabulaciones y saltos de línea en todos los campos.
+- Mayúsculas de marcas conocidas: `hp` → `HP`, `lenovo` → `Lenovo`, `Tp-link` → `TP-Link`…
+
+### 2. Validación
+
+Una sola regla incumplida bloquea la incidencia:
+
+| Anomalía | Ejemplos |
 |---|---|
-| Crítica | Servidores, bases de datos, routers/switches, caída general de red |
-| Alta | Hardware crítico de un equipo (disco, placa, BSOD…) o que no arranca |
-| Media | Software y errores genéricos |
-| Leve | Periféricos: teclado, ratón, cables, altavoces, impresora |
+| Fecha imposible | año < mínimo (`1668`), futura (`2040`), `31/02`, sin formato |
+| Campo vacío | `<camp nom="X"/>` en un campo obligatorio (marca y modelo son opcionales) |
+| Spam / Contenido basura | binario, amárico, «Fox News», «cerditos»… |
+| **Texto aleatorio / sin sentido** | ensaladas de palabras de Faker: «Cuba ciudad medios ii.», «Peso conocer presenta.» |
+| Desbordamiento | más de 200 caracteres en un campo breve (código, equipo…) |
 
-Las palabras clave y expresiones regulares se ajustan en `app/config.py` (`REGLAS_SEVERIDAD` fija el orden de decisión).
+**Filtro de texto aleatorio.** Cada descripción recibe una *fuerza técnica* = 2 × síntomas de avería (`no funciona`, `trencat`, `no encén`, `lent`…) + dispositivos (`teclat`, `impressora`, `wifi`…), según el léxico de `rules.json`:
 
-## Interfaz web en tiempo real (Chrome en PC y móvil)
+- Fuerza ≥ 2 → se acepta. Por eso pasan «No funciona», «No respon», «No encèn» o «Teclat trencat».
+- Micro-frases planas (Mayúscula + palabras sueltas + punto, sin comas ni apóstrofos) con fuerza < 2 → **texto aleatorio (tipo Faker)**. El motivo cita las señales encontradas: nombres o lugares al azar (`méxico`, `juan`…) y letras o números romanos sueltos (`ii`).
+- Párrafo de 25 palabras o más con fuerza < 3, o 12 palabras o más sin ningún término técnico → **sin relación con soporte técnico**.
+- Sin ninguna palabra («69») → bloqueada.
+
+### 3. Severidad
+
+Se evalúa en orden y gana la primera regla que encaja:
+
+| Paso | Nivel | Cuándo |
+|---|---|---|
+| 0 | (el del XML) | Si el XML trae un campo de prioridad, manda su valor |
+| 1 | **Crítica** | La **descripción** habla de caída general («xarxa caiguda», «tall general»), o de un síntoma de caída («caigut», «sense internet», «no respon», «fum»…) en un **equipo de infraestructura** (servidor, router, switch…) o con **impacto multiusuario** («tota la planta», «tothom»…) |
+| 2 | Alta | Hardware crítico del equipo (disco, placa, BSOD, cremat, virus…) |
+| 3 | Alta | Infraestructura que afecta a varias personas (campo de afectados o descripción), sin caída descrita |
+| 4 | Leve | Periféricos y consumibles (va antes que «no arranca»: «no arrenca la impressora» es Leve) |
+| 5 | Alta | El equipo no arranca o no carga el sistema |
+| 6 | Media | Software o error genérico |
+| 7 | Media | Sin pistas |
+
+Un `Router/Switch` con un fallo menor («Va molt lent», «No funciona») **ya no es Crítica**: queda en Media (o en Alta si afecta a muchas personas), y la traza de auditoría lo explica.
+
+### Reglas editables: `rules.json`
+
+Las palabras clave de cada nivel de severidad, las marcas reconocidas, el léxico técnico y el rango de años viven en **`rules.json`**, en la raíz del proyecto. Si no existe, se genera solo con los valores de fábrica (`app/config.py` → `REGLAS_POR_DEFECTO`). Si está dañado, el programa usa los valores de fábrica y avisa, pero no lo sobrescribe.
+
+- Una palabra o expresión por elemento, sin tildes ni mayúsculas (se normalizan solas).
+- Se buscan al **inicio de palabra**: `impressor` encaja con impressora e impressores.
+- Las marcas se buscan como **palabra completa**: `acer` no encaja en «acerca».
+
+Se pueden editar a mano o desde la web (pestaña *Auditoría y Reglas*), que recalcula todo al instante.
+
+## Interfaz web en tiempo real (PC y móvil)
 
 ```bash
-python main.py --web                       # busca respotes.xml / incidencies.xml
-python main.py --web -f datos/respotes.xml # XML concreto
-python main.py --web --port 8502           # otro puerto (si 8501 está ocupado se busca uno libre)
+python3 main.py --web                       # red local + túnel público con QR
+python3 main.py --web --sin-tunel           # solo red local
+python3 main.py --web -f datos/respotes.xml # XML concreto
+python3 main.py --web --port 8502           # otro puerto (si 8501 está ocupado se busca uno libre)
+python3 main.py --web --tunel cloudflared   # forzar una herramienta de túnel
 ```
 
-La consola muestra las URLs exactas para abrir en Chrome:
+La consola muestra las direcciones y un **código QR** para escanear con la cámara del móvil:
 
 ```
-💻 PC (este equipo)       http://localhost:8501
-📱 Móvil (misma Wi-Fi)    http://192.168.1.20:8501
+PC (este equipo)        http://localhost:8501
+Móvil (misma Wi-Fi)     http://192.168.1.20:8501
+Cualquier red (4G/5G)   https://palabras-al-azar.trycloudflare.com
 ```
 
-También se puede lanzar directamente con Streamlit desde la carpeta del proyecto:
+### Acceso desde cualquier red: túnel público automático
 
-```bash
-streamlit run web.py --server.address 0.0.0.0
-streamlit run web.py --server.address 0.0.0.0 -- --file ruta/al/respotes.xml
-```
+La «External URL» que muestra Streamlit es la IP pública del router y **no funciona** desde fuera (NAT/cortafuegos). Por eso `--web` abre un túnel HTTPS con la primera herramienta disponible:
 
-**Qué ofrece**
+| Herramienta | Cuenta | Instalación |
+|---|---|---|
+| **cloudflared** (recomendada) | No | Windows: `winget install --id Cloudflare.cloudflared` · macOS: `brew install cloudflared` · Linux: binario `cloudflared-linux-amd64` de [GitHub releases](https://github.com/cloudflare/cloudflared/releases) en `~/.local/bin/cloudflared` con `chmod +x` |
+| ngrok (pyngrok) | Sí (gratis) | `pip install pyngrok` y variable `NGROK_AUTHTOKEN` |
+| localtunnel | No | `npm i -g localtunnel` (o tener `npx`); la primera visita pide la IP pública del PC |
 
-- **En vivo**: comprueba el XML cada 2 s (fecha de modificación y tamaño). Al guardar o añadir `<incidencia>`, métricas, gráficos y tablas se actualizan solos, sin perder los filtros, y aparece un aviso con las incidencias nuevas. La insignia de la cabecera muestra `🟢 En vivo · Última lectura: HH:MM:SS`.
-- **A prueba de guardados a medias**: si el XML se está escribiendo y no se puede leer, se mantiene el último estado válido (`🟡 Reintentando lectura`) y se reintenta en el siguiente ciclo.
-- **Panel**: KPIs (procesadas, válidas %, bloqueadas %, críticas/altas), anillo de validez vs anomalías, evolución temporal por día/semana/mes, top equipos y categorías, y distribución por severidad.
-- **Filtros táctiles**: búsqueda libre (`#42` = ID exacto), estado, severidad, tipo de anomalía, categoría, marca y rango de fechas.
-- **🔍 Cómo se categoriza (Auditoría y Reglas)**: mapa de las reglas activas (generado desde `app/config.py`) y un inspector por ID que explica, paso a paso, por qué cada incidencia se validó o rechazó y qué palabra clave fijó su severidad.
-- **Menú lateral** (☰): subir otro XML a mano (útil desde el móvil), pausar la actualización en vivo y ver la URL para el móvil.
+Si no hay ninguna, la web arranca igualmente en la red local y la consola explica qué instalar.
 
-**Contraseña**: `python main.py --web --clave MiContraseña` pide contraseña antes de mostrar los datos.
+> ⚠️ **La URL del túnel es pública**: cualquiera que la tenga ve los datos. Protégela con contraseña. Es mejor usar la variable de entorno que `--clave`, porque `--clave` queda en el historial de la terminal:
+> ```bash
+> MONITOR_CLAVE='tu-contraseña' python3 main.py --web          # Linux/macOS
+> $env:MONITOR_CLAVE='tu-contraseña'; py main.py --web          # Windows PowerShell
+> ```
 
-### Desde cualquier red (datos móviles, casa…): Streamlit Community Cloud
+### Qué ofrece
 
-Sin instalar nada: la web se aloja gratis en los servidores de Streamlit y se abre con un enlace `https://….streamlit.app` desde cualquier sitio.
+- **En vivo**: comprueba el XML (y `rules.json`) cada 2 s. Al guardar o añadir `<incidencia>`, todo se actualiza solo, sin perder los filtros, y avisa de las incidencias nuevas. Si el XML se está escribiendo a medias, mantiene el último estado válido y reintenta.
+- **📊 Panel**: KPIs, validez vs anomalías, severidad, evolución temporal, top equipos y categorías, **progreso de reparaciones** y **🛰️ radar de puntos calientes**:
+  - Zonas cuyo ritmo reciente (ventana de 30, 60 o 90 días) supera su ritmo histórico (×1,3 = punto caliente).
+  - Equipos crónicos o reincidentes por código de inventario (`PC-ADM-016`, `EQ-1234`…).
+  - Mapa de calor de zona × mes.
+- **📋 Incidencias**: tabla con ficha explicada al tocar una fila, o **🛠️ tarjetas de reparación** táctiles. En cada tarjeta, el técnico marca *Pendiente / En curso / Resuelta* y deja una nota. Se guarda en **`gestion.json`**; el XML original **nunca** se modifica. Descargas:
+  - **`respotes_limpio.xml`**: misma estructura que el original, solo con las válidas y ya auto-reparadas.
+  - **`cuarentena.csv`**: una fila por regla incumplida, con el campo afectado y el motivo exacto.
+  - CSV del filtro actual.
+- **Filtros táctiles**: búsqueda (`#42` = ID exacto), estado, severidad, **estado de reparación**, tipo de anomalía, categoría, marca y fechas.
+- **🔍 Auditoría y Reglas**:
+  - Inspector paso a paso de cada incidencia (reparaciones, validación, categoría, marca y regla exacta de severidad).
+  - **🧪 Problemas emergentes**: palabras y bigramas frecuentes en las incidencias sin clasificar bien. Se añaden a `rules.json` con un clic.
+  - **✏️ Editor de reglas**: palabras clave, marcas y rango de años, con botón para restaurar los valores de fábrica.
+  - Mapa de todas las reglas.
+- **Menú lateral** (☰): subir otro XML a mano, pausar el modo en vivo y ver la URL de la red local.
 
-1. Entra en <https://share.streamlit.io> e inicia sesión con la cuenta de GitHub del repositorio.
-2. **Create app** → *Deploy a public app from GitHub* → repositorio de este proyecto, rama `main`, archivo principal `web.py`.
-3. En **Advanced settings**: elige Python 3.12 y, en *Secrets*, pon la contraseña:
+También se puede lanzar directamente con Streamlit: `streamlit run web.py --server.address 0.0.0.0 -- --file ruta/al/respotes.xml`.
+
+### Alternativa permanente: Streamlit Community Cloud
+
+Para tener la web siempre disponible sin el PC encendido:
+
+1. Sube el proyecto a GitHub (con `incidencies.xml` o `respotes.xml` y `rules.json`).
+2. En <https://share.streamlit.io>: **Create app** → repositorio, rama `main`, archivo principal **`web.py`**.
+3. En **Advanced settings**, elige Python 3.12 y, en *Secrets*:
    ```toml
    MONITOR_CLAVE = "tu-contraseña"
    ```
-4. **Deploy**. El enlace sirve para el PC y para el móvil.
+4. **Deploy**. Streamlit instala `requirements.txt` y la web lee el XML del repositorio: cada `git push` con el XML actualizado se refleja solo.
 
-La versión en la nube lee el `respotes.xml` / `incidencies.xml` **del repositorio**: cada `git push` con el XML actualizado se refleja solo en la web abierta (la vigilancia en vivo detecta el cambio). Desde el menú lateral también se puede subir otro XML a mano.
+> En la nube, los cambios hechos desde la web en `rules.json` y `gestion.json` duran mientras la app esté activa: se pierden al reiniciarse. Para conservarlos, edita `rules.json` en el repositorio.
 
-**Si el móvil no conecta**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez). Para acceder desde fuera de la red local usa Streamlit Community Cloud (arriba).
+**Si el móvil no conecta en la red local**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez).
+
+## Tests
+
+```bash
+python3 -m pytest
+```
+
+Cubren:
+- Incidencias reales válidas, incluidos mensajes cortos en catalán y castellano.
+- Rechazo del texto aleatorio tipo Faker.
+- Router con fallo menor que no debe ser Crítica.
+- Auto-reparación de fechas, espacios y marcas.
+- Fechas imposibles, etiquetas vacías, desbordamiento, binario y amárico.
+- Generación y relectura de `respotes_limpio.xml` y `cuarentena.csv`.
+- `rules.json`, `gestion.json`, radar, minería de palabras y túnel (con un `cloudflared` simulado).
+
+Los tests no tocan los archivos reales: trabajan en carpetas temporales.
 
 ## Estructura
 
 ```
-main.py              Punto de entrada CLI (argparse + bucle protegido, --web)
+main.py              Punto de entrada CLI (argparse + bucle protegido, --web con túnel)
 web.py               Interfaz web Streamlit + Plotly (solo presentación)
+rules.json           Reglas editables (se genera solo si no existe)
+gestion.json         Seguimiento de reparaciones (se crea al guardar el primer estado)
+requirements.txt     Dependencias (también las usa Streamlit Community Cloud)
 .streamlit/          Configuración de Streamlit (sin telemetría, modo headless)
 app/
-  config.py          Constantes, colores, palabras clave y regex
-  models.py          Incidencia, Anomalia, EstadisticasResumen
+  config.py          Constantes, regex de campos, valores de fábrica de las reglas
+  rules.py           Carga, validación, compilación y guardado de rules.json
+  models.py          Incidencia, Anomalia, Reparacion, Paso, EstadisticasResumen
   utils.py           Utilidades de texto, rutas y fechas
   parser.py          Carga y validación de estructura del XML
-  validator.py       Anomalías, fechas, marca, categoría y severidad
-  analytics.py       Métricas, rankings y filtros
-  exporter.py        Lectura/escritura del JSON
-  ui/
-    console.py       Consola Rich única con UTF-8 forzado
-    dashboard.py     Dashboard, tarjetas KPI, barras y sparklines
-    paginator.py     Tablas zebra paginadas y fichas por ID
-    menus.py         Menús questionary y controlador de la app
+  validator.py       Auto-reparación, anomalías, coherencia técnica, marca y severidad
+  analytics.py       Métricas, filtros, radar de zonas/equipos y minería de palabras
+  exporter.py        JSON de válidas, respotes_limpio.xml y cuarentena.csv
+  gestion.py         Estados de reparación en gestion.json
+  tunel.py           Túnel público (cloudflared / ngrok / localtunnel) y QR en ASCII
+  ui/                Menú de terminal (Rich + questionary)
+tests/               Tests de pytest
 legacy/              Versión monolítica anterior (solo referencia)
 ```
 
 ## Problemas frecuentes
 
-- **Caracteres raros en CMD antiguo**: el programa fuerza UTF-8 al arrancar. Si aun así ves `?` en los bordes, usa Windows Terminal o cambia la fuente de la consola a una con soporte Unicode (Cascadia Mono, Consolas).
+- **«python: no se encontró la orden»**: usa `python3` (Linux/macOS) o `py` (Windows).
+- **Caracteres raros en CMD antiguo**: el programa fuerza UTF-8 al arrancar. Si aun así ves `?` en los bordes, usa Windows Terminal o una fuente con soporte Unicode (Cascadia Mono, Consolas).
+- **El QR no se lee**: está pensado para terminales de fondo oscuro. Con fondo claro, abre la URL `https://…` a mano.
 - **`Faltan dependencias`**: activa el entorno virtual y repite `pip install -r requirements.txt`.
-- **Sin terminal interactiva** (salida redirigida, IDE sin TTY): los menús con flechas se sustituyen automáticamente por menús numerados.
+- **Sin terminal interactiva** (salida redirigida, IDE sin TTY): los menús con flechas se sustituyen por menús numerados.
+
+## Próximas mejoras (Roadmap)
+
+- **Notificaciones push de incidencias críticas**: un bot de Telegram o Discord que avise automáticamente cuando entre una incidencia **Crítica** nueva. La web ya detecta las incidencias nuevas en vivo; faltaría enviar el aviso al canal del equipo técnico. *(Solo documentado: todavía no implementado.)*

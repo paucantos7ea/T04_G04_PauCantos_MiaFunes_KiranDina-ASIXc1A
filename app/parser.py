@@ -159,6 +159,7 @@ class XMLParser:
             while clave in inc.campos or clave in inc.vacios:
                 clave, n = f"{nombre} ({n})", n + 1
 
+            inc.orden.append(clave)
             if valor:
                 inc.campos[clave] = valor
             else:

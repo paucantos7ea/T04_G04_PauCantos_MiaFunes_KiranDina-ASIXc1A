@@ -224,6 +224,8 @@ def ficha_rechazo(inc: Incidencia) -> Panel:
     cabecera.add_row("Veredicto", texto_estado(inc))
     cabecera.add_row("Reglas violadas", Text(str(len(inc.anomalias)), style="bold"))
     cabecera.add_row("Categorías", Text(", ".join(sorted(inc.categorias())), style=NEON_ROSA))
+    if inc.auto_reparada:
+        cabecera.add_row("Auto-reparada", _texto_reparaciones(inc))
 
     causas = Table(box=box.ROUNDED, border_style=NEON_ROJO, header_style=f"bold {NEON_CIAN}",
                    expand=True, title="[bold]Causa exacta del rechazo[/]")
@@ -246,12 +248,22 @@ def ficha_rechazo(inc: Incidencia) -> Panel:
                  border_style=NEON_ROJO, box=box.HEAVY, padding=(1, 2))
 
 
+def _texto_reparaciones(inc: Incidencia) -> Text:
+    return Text("; ".join(f"{r.campo}: «{truncar(r.antes, 25)}» → «{truncar(r.despues, 25)}»"
+                          for r in inc.reparaciones), style=NEON_CIAN)
+
+
 def ficha_valida(inc: Incidencia) -> Panel:
     resumen = Text.assemble(
         texto_estado(inc), ("   Severidad: ", "dim"),
         texto_severidad(inc), ("   Categoría: ", "dim"), (inc.tipo, "bold"),
         ("   Marca: ", "dim"), (inc.marca or "—", "bold"))
-    return Panel(Group(resumen, Text(""), _tabla_campos(inc)),
+    criterio = Text.assemble(("Criterio: ", "dim"),
+                             (f"{inc.criterio_severidad} → {inc.regla_severidad}", "italic"))
+    partes = [resumen, criterio]
+    if inc.auto_reparada:
+        partes.append(Text.assemble(("Auto-reparada: ", "dim"), _texto_reparaciones(inc)))
+    return Panel(Group(*partes, Text(""), _tabla_campos(inc)),
                  title=f"[bold {NEON_VERDE}]FICHA · ID {escape(inc.id)}[/]",
                  border_style=NEON_VERDE, box=box.HEAVY, padding=(1, 2))
 

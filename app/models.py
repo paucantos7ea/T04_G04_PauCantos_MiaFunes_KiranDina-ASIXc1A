@@ -40,11 +40,21 @@ class Paso:
 
 
 @dataclass
+class Reparacion:
+    """Una corrección automática aplicada ANTES de validar (auto-reparación)."""
+    campo: str
+    antes: str
+    despues: str
+    motivo: str             # "Fecha normalizada", "Espacios", "Mayúsculas de marca"
+
+
+@dataclass
 class Incidencia:
     """Una <incidencia> del XML, ya validada y enriquecida."""
     id: str
     campos: dict[str, str] = field(default_factory=dict)   # Campos con valor
     vacios: list[str] = field(default_factory=list)        # Etiquetas vacías
+    orden: list[str] = field(default_factory=list)         # Orden original de los <camp>
     sin_id: bool = False
     anomalias: list[Anomalia] = field(default_factory=list)
     # Rellenados por validator.AnomalyDetector / validator.Clasificador
@@ -62,10 +72,15 @@ class Incidencia:
     criterio_severidad: str = ""    # Paso del motor: "Paso 4 · El equipo no arranca"
     regla_severidad: str = ""       # Disparador exacto: 'Palabra clave: "no arrenca"'
     traza: list[Paso] = field(default_factory=list)
+    reparaciones: list[Reparacion] = field(default_factory=list)
 
     @property
     def valida(self) -> bool:
         return not self.anomalias
+
+    @property
+    def auto_reparada(self) -> bool:
+        return bool(self.reparaciones)
 
     @property
     def anomalia_principal(self) -> Anomalia | None:
