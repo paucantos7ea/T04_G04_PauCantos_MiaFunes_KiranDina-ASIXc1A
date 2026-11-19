@@ -287,7 +287,28 @@ Qué incluye:
 - **Gráficos táctiles**: validez vs. anomalías, evolución mensual, severidad y top de equipos, zonas, categorías o marcas.
 - **Filtros instantáneos** y **lista paginada** (15 por página, con salto a una página): tarjetas en el móvil y tabla en el escritorio.
 - **Ficha «¿por qué se clasificó así?»**: al tocar cualquier incidencia se ven sus campos originales y la regla exacta que decidió.
-- **Pestaña de reglas activas.**
+- **⏰ SLA y ⏱️ MTTR**: tarjetas y aviso con las incidencias Críticas (más de 4 h) y Altas (más de 24 h) sin resolver, contadas desde la «Marca de temps» del formulario. Cada una lleva un ⏰ en la lista. Dejan de contar al marcarlas como *Resuelta*.
+- **⚡ Masivas y duplicadas**: tormentas por planta u oficina y tickets duplicados, con las mismas reglas que la versión Python (el motor JS se ha comprobado con un test de paridad). Muestra tarjetas resumen, un gráfico por planta y la lista de grupos con sus IDs: al tocar uno se abre su ficha. Respeta los filtros y también funciona con un XML cargado en local.
+- **☀️ Claro / 🌙 Oscuro**: Claro por defecto. El navegador recuerda el tema elegido y los gráficos cambian con él.
+- **📄 Descargar Informe Ejecutivo** (los dos roles): `informe_estado.html` generado en el navegador en el momento de pulsar, con las reglas, las reparaciones y el SLA vigentes. Listo para imprimir o guardar como PDF.
+- **Pestaña de reglas** con el mapa de reglas activas.
+- **Filtro por estado de reparación** y columna «Reparación» en la lista.
+
+**Modo Técnico (PIN de técnico)**, todo dentro de la propia página:
+
+| Función | Dónde | Qué hace |
+|---|---|---|
+| ✏️ **Editor de reglas** | Pestaña *Reglas* | Años válidos, todas las listas de palabras clave (Crítica, Alta, Leve, Media, léxico técnico) y marcas. **Aplicar y recalcular** vuelve a analizar todo el XML en el navegador con las reglas nuevas (unos 1-2 s). El resultado es idéntico al de Python con esas mismas reglas, comprobado por un test. También permite restaurar los valores de fábrica. |
+| 🧪 **Problemas emergentes** | Pestaña *Reglas* | Palabras y parejas frecuentes que aún no son palabra clave. Con ➕ se añaden a la lista elegida y todo se recalcula. |
+| 🛠️ **Reparaciones** | Ficha de cada incidencia válida | Estado *Pendiente / En curso / Resuelta* y nota, con `fecha_inicio`, `fecha_resolucion` y `duracion_minutos` automáticos (mismas reglas que `gestion.json`). Alimentan el MTTR, el SLA y el informe. El Consultor solo los ve. |
+| 📜 **Auditoría** | Pestaña *Auditoría* (solo Técnico) | Accesos, PINs fallidos, cierres de sesión, cambios de reglas y reparaciones y descargas, con el formato de `audit.log`. Se puede filtrar por acción, rol y texto. |
+
+> **Dónde se guardan los cambios del Técnico.** Una página de GitHub Pages no puede escribir en el repositorio, así que todo se guarda en **el navegador donde se hace** (`localStorage`) y sobrevive a recargas. Para que lo vea todo el mundo:
+> 1. En la pestaña *Auditoría*, descarga `rules.json` (y, si quieres conservarlos, `gestion.json` y `audit.log`).
+> 2. Sustituye `rules.json` en el repositorio y haz `git push`.
+> 3. El workflow regenera y publica la página con las reglas nuevas en 1-2 minutos.
+>
+> El workflow publica también una copia del XML (`datos.xml`) junto a `index.html`, para que el navegador pueda volver a analizarlo con reglas nuevas.
 - **Botón «Cargar otro XML local»**: analiza otro archivo en el propio navegador con las mismas reglas, sin subirlo a ningún sitio.
 
 **Activarlo (una sola vez):**

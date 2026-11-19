@@ -58,10 +58,15 @@ jobs:
           PIN_TECNICO: ${{ secrets.PIN_TECNICO }}
         run: python3 main.py --html
 
-      - name: Preparar la carpeta publicada (solo el dashboard)
+      # datos.xml = copia del XML analizado: el modo Técnico lo vuelve a analizar en el
+      # navegador cuando cambia las reglas (las mismas incidencias que ya van en index.html)
+      - name: Preparar la carpeta publicada (dashboard + XML)
         run: |
           mkdir -p _site
           cp index.html _site/index.html
+          for xml in respotes.xml incidencies.xml; do
+            if [ -f "$xml" ]; then cp "$xml" _site/datos.xml; break; fi
+          done
           touch _site/.nojekyll
 
       - name: Subir el sitio

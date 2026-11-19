@@ -32,6 +32,7 @@ Para datos confidenciales hay que usar la web con servidor (main.py --web).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -41,13 +42,15 @@ from datetime import date, datetime
 from pathlib import Path
 
 from app import config as cfg
-from app.analytics import Analizador, _valor, analizar_archivo
+from app.analytics import Analizador, _valor, analizar_archivo, palabras_emergentes
 from app.auth import ROL_CONSULTA, ROL_TECNICO, GestorAuth
+from app.exporter import _CSS_INFORME
 from app.models import Incidencia
-from app.rules import Reglas, cargar_reglas
+from app.rules import Reglas, cargar_reglas, validar_datos
 
 CARPETA_ESTATICA = Path(__file__).resolve().parent / "estatico"
 NOMBRE_HTML = "index.html"
+NOMBRE_XML_PUBLICADO = "datos.xml"   # Copia del XML junto a index.html (re-análisis con reglas nuevas)
 MAX_VALOR = 600                 # Caracteres por valor embebido (la basura gigante se recorta)
 ZONA_HORARIA = "Europe/Madrid"  # Hora del sello "Actualizado" (GitHub Actions corre en UTC)
 
@@ -97,6 +100,11 @@ def configuracion_motor(reglas: Reglas) -> dict:
         "niveles": cfg.NIVELES,
         "pasos": cfg.PASOS_SEVERIDAD,
         "etiquetasListas": cfg.ETIQUETAS_LISTAS,
+        "sla": cfg.SLA_HORAS,
+        "estadosGestion": cfg.ESTADOS_GESTION,
+        "reglasFabrica": validar_datos(copy.deepcopy(cfg.REGLAS_POR_DEFECTO)),
+        "masivas": {"minTormenta": cfg.MIN_TORMENTA, "ventana": cfg.VENTANA_TORMENTA_DIAS,
+                    "umbral": cfg.UMBRAL_DUPLICADO, "margen": cfg.MARGEN_DUPLICADO_DIAS},
         "reglas": {"datos": reglas.datos,
                    "patrones": {clave: p.pattern for clave, p in reglas.patrones.items()},
                    "marcas": [[nombre, p.pattern] for nombre, p in reglas.marcas]},
@@ -182,9 +190,18 @@ def datos_embebidos(datos: Analizador, reglas: Reglas, ahora: datetime | None = 
         "meta": {"generado": f"{ahora:%d/%m/%Y %H:%M}", "generadoISO": ahora.isoformat(),
                  "fuente": datos.ruta.name, "hoy": (hoy or date.today()).isoformat(),
                  "total": datos.resumen.total, "validas": datos.resumen.validas,
-                 "anomalas": datos.resumen.anomalas, "reglas": reglas.huella},
+                 "anomalas": datos.resumen.anomalas, "reglas": reglas.huella,
+                 "xml": NOMBRE_XML_PUBLICADO},
         "config": configuracion_motor(reglas),
         "acceso": acceso_embebido(pins),
+        # Informe ejecutivo ya generado (botón «Descargar Informe Ejecutivo»). En Pages no
+        # hay gestion.json: sin seguimiento, todas las incidencias cuentan como abiertas.
+        # Estilos del informe ejecutivo: el navegador lo genera al pulsar el botón, con las
+        # reglas y el seguimiento vigentes (misma estructura que exporter.informe_estado)
+        "informeCss": _CSS_INFORME,
+        # Palabras frecuentes que aún no son palabra clave (botones ➕ del modo Técnico)
+        "emergentes": [[t.texto, t.tipo, t.incidencias, t.ejemplo[:200]] for t in palabras_emergentes(
+            datos.todas, [reglas.patron(c) for c in reglas.datos["severidad"]], top=15)],
         "S": s.cadenas,
         "I": registros,
     }
@@ -214,6 +231,8 @@ def generar_html(datos: Analizador, reglas: Reglas, ahora: datetime | None = Non
     html = _estatico("plantilla.html")
     for marca, contenido in (("{{CSS}}", _estatico("dashboard.css")),
                              ("{{MOTOR}}", _estatico("motor.js")),
+                             ("{{OPERACIONES}}", _estatico("operaciones.js")),
+                             ("{{TECNICO}}", _estatico("tecnico.js")),
                              ("{{APP}}", _estatico("dashboard.js")),
                              ("{{ACCESO}}", _estatico("acceso.js")),
                              ("{{SELLO}}", sello.replace("&", "&amp;").replace("<", "&lt;"))):

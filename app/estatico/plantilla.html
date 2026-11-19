@@ -3,7 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="light dark">
+<script>
+// Tema antes de pintar nada (sin parpadeo): Claro por defecto, el elegido se recuerda
+try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentElement.dataset.tema = "oscuro"; } catch (_) {}
+</script>
 <meta name="description" content="Dashboard de incidencias informáticas: validez, severidad, evolución y auditoría de cada registro.">
 <title>Monitor de incidencias</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233e63dd'/%3E%3Cpath d='M8 22V12m6 10V8m6 14v-6m6 6V11' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -31,6 +35,11 @@
       <p class="sello" id="sello">{{SELLO}}</p>
     </div>
     <div class="cabecera-acciones">
+      <div class="selector-tema" id="selector-tema" role="group" aria-label="Tema">
+        <button type="button" data-tema="claro" aria-pressed="true">☀️ Claro</button>
+        <button type="button" data-tema="oscuro" aria-pressed="false">🌙 Oscuro</button>
+      </div>
+      <button class="boton boton-primario" id="descargar-informe" type="button" title="Informe HTML listo para imprimir o guardar como PDF">📄 Descargar Informe Ejecutivo</button>
       <span class="sesion" id="sesion" hidden>
         <span class="insignia-rol" id="rol-activo"></span>
         <button class="boton boton-discreto" id="cerrar-sesion" type="button">Cerrar sesión</button>
@@ -45,7 +54,9 @@
   <nav class="pestanas" role="tablist" aria-label="Secciones">
     <button role="tab" aria-selected="true" data-pestana="panel">Panel</button>
     <button role="tab" aria-selected="false" data-pestana="registros">Incidencias</button>
-    <button role="tab" aria-selected="false" data-pestana="reglas">Reglas activas</button>
+    <button role="tab" aria-selected="false" data-pestana="masivas">⚡ Masivas y duplicadas</button>
+    <button role="tab" aria-selected="false" data-pestana="reglas">Reglas</button>
+    <button role="tab" aria-selected="false" data-pestana="auditoria" id="pestana-auditoria" hidden>📜 Auditoría</button>
   </nav>
 </header>
 
@@ -59,12 +70,14 @@
     <select id="f-cat" aria-label="Categoría"><option value="">Toda categoría</option></select>
     <select id="f-marca" aria-label="Marca"><option value="">Toda marca</option></select>
     <select id="f-anom" aria-label="Tipo de anomalía"><option value="">Todo tipo de anomalía</option></select>
+    <select id="f-rep" aria-label="Reparación"><option value="">Toda reparación</option></select>
     <button class="boton boton-discreto" id="f-limpiar" type="button">Limpiar</button>
   </section>
 
   <section class="kpis" id="kpis" aria-label="Indicadores"></section>
 
   <section class="vista" id="vista-panel">
+    <div id="alerta-sla"></div>
     <div class="rejilla-graficos">
       <article class="tarjeta"><h2>Validez vs. anomalías</h2><p class="nota">Las bloqueadas se agrupan por la primera regla que las rechazó.</p><div class="lienzo"><canvas id="g-donut"></canvas></div></article>
       <article class="tarjeta"><h2>Distribución por severidad</h2><p class="nota">Solo incidencias válidas.</p><div class="lienzo"><canvas id="g-sev"></canvas></div></article>
@@ -91,7 +104,23 @@
     <nav class="paginacion" id="paginacion" aria-label="Paginación"></nav>
   </section>
 
-  <section class="vista" id="vista-reglas" hidden></section>
+  <section class="vista" id="vista-masivas" hidden>
+    <h2 class="seccion-titulo">⚡ Incidencias masivas y duplicadas</h2>
+    <p class="nota" id="masivas-nota"></p>
+    <section class="kpis" id="masivas-kpis" aria-label="Resumen de masivas"></section>
+    <article class="tarjeta ancha" id="masivas-grafico"><h2>Incidencias en tormentas por planta / oficina</h2><div class="lienzo"><canvas id="g-tormentas"></canvas></div></article>
+    <h2 class="seccion-titulo" id="titulo-tormentas">Tormentas de incidencias</h2>
+    <div class="grupos" id="lista-tormentas"></div>
+    <h2 class="seccion-titulo" id="titulo-duplicados">Tickets duplicados</h2>
+    <div class="grupos" id="lista-duplicados"></div>
+  </section>
+
+  <section class="vista" id="vista-reglas" hidden>
+    <div id="editor-reglas"></div>
+    <div id="mapa-reglas"></div>
+  </section>
+
+  <section class="vista" id="vista-auditoria" hidden></section>
 </main>
 
 <footer class="pie" inert>Generado con <code>python3 main.py --html</code> a partir del XML del repositorio. Toca cualquier incidencia para ver por qué se clasificó así.</footer>
@@ -108,6 +137,12 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
 <script>
 {{MOTOR}}
+</script>
+<script>
+{{OPERACIONES}}
+</script>
+<script>
+{{TECNICO}}
 </script>
 <script>
 {{APP}}

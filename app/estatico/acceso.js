@@ -63,10 +63,16 @@
     $("#rol-activo").textContent = (rol === "Técnico" ? "🛠️ Modo " : "👁️ Modo ") + rol;
     $("#sesion").hidden = false;
     document.documentElement.dataset.rol = rol;
-    if (window.Dashboard) window.Dashboard.filtrar();   // Chart.js mide ya con el panel visible
+    if (window.Dashboard) { window.Dashboard.ponerRol(rol); window.Dashboard.filtrar(); }  // Chart.js mide ya visible
   }
 
+  // Tecnico es un const global de tecnico.js (no cuelga de window)
+  const auditar = (rol, accion, detalle) => { if (typeof Tecnico !== "undefined") Tecnico.auditar(rol, accion, detalle); };
+
   function bloquear() {
+    const rol = document.documentElement.dataset.rol;
+    if (rol) auditar(rol, "CIERRE_SESION", `Cierre de sesión de Modo ${rol}`);
+    if (window.Dashboard) window.Dashboard.ponerRol(null);
     guardar(null);
     delete document.documentElement.dataset.rol;
     document.body.classList.add("bloqueado");
@@ -82,16 +88,22 @@
     ev.preventDefault();
     const error = $("#acceso-error");
     const restante = Math.ceil((esperaHasta - Date.now()) / 1000);
-    if (restante > 0) { error.textContent = `Demasiados intentos. Espera ${restante} s.`; error.hidden = false; return; }
+    if (restante > 0) {
+      error.textContent = `Demasiados intentos. Espera ${restante} s.`; error.hidden = false;
+      auditar("Anónimo", "ACCESO_FALLIDO", "Intento durante el bloqueo por fuerza bruta");
+      return;
+    }
     const pin = $("#acceso-pin").value.trim();
     const huella = sha256(`${ACCESO.sal}:${pin}`);
     const acierto = ACCESO.huellas.find((h) => h[0] === huella);
     if (acierto) {
       fallos = 0; error.hidden = true;
       guardar(acierto[1]);
+      auditar(acierto[1], "ACCESO", `Inicio de sesión en Modo ${acierto[1]}`);
       desbloquear(acierto[1]);
       return;
     }
+    auditar("Anónimo", "ACCESO_FALLIDO", `PIN incorrecto (${pin.length} cifras)`);
     fallos++;
     if (fallos >= 5) { fallos = 0; esperaHasta = Date.now() + 30000; }
     error.textContent = "PIN incorrecto.";
