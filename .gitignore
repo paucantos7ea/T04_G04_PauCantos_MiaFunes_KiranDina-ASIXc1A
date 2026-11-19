@@ -11,3 +11,6 @@ gestion.json
 # Dashboard generado: lo crea `python3 main.py --html` / GitHub Actions
 index.html
 _site/
+# PINs de acceso y registro de auditoría: nunca al repositorio (es público)
+pins.json
+audit.log

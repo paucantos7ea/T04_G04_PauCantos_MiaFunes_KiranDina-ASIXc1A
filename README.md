@@ -154,11 +154,35 @@ La «External URL» que muestra Streamlit es la IP pública del router y **no fu
 
 Si no hay ninguna, la web arranca igualmente en la red local y la consola explica qué instalar.
 
-> ⚠️ **La URL del túnel es pública**: cualquiera que la tenga ve los datos. Protégela con contraseña. Es mejor usar la variable de entorno que `--clave`, porque `--clave` queda en el historial de la terminal:
-> ```bash
-> MONITOR_CLAVE='tu-contraseña' python3 main.py --web          # Linux/macOS
-> $env:MONITOR_CLAVE='tu-contraseña'; py main.py --web          # Windows PowerShell
-> ```
+> ⚠️ **La URL del túnel es pública**: la web siempre pide PIN, pero **cambia los PINs de fábrica** (1234 / 12345) antes de abrir el túnel (ver «Acceso por PIN» más abajo). Si no lo haces, la consola te avisa en rojo.
+
+### Acceso por PIN y registro de auditoría
+
+Al abrir la web se pide un PIN. Hay dos niveles:
+
+| PIN (de fábrica) | Modo | Qué puede hacer |
+|---|---|---|
+| `1234` | 👁️ **Consulta** | Ver todo (gráficos, filtros, radar, reglas, fichas) y descargar `respotes_limpio.xml` y `cuarentena.csv`. **No** puede editar reglas ni reparaciones. |
+| `12345` | 🛠️ **Técnico** | Además, editar `rules.json` (editor y palabras emergentes), cambiar estados y notas de reparación y consultar el **📜 Registro de Auditoría**. |
+
+**Dónde se configuran los PINs**, por prioridad:
+
+1. Variables de entorno `PIN_CONSULTA` y `PIN_TECNICO` (recomendado en servidores y en Streamlit Cloud).
+2. `pins.json` en la raíz del proyecto. Se crea solo con los valores de fábrica si no existe:
+   ```json
+   { "consulta": "4821", "tecnico": "730915" }
+   ```
+
+Cada PIN debe tener de 4 a 12 cifras, y los dos tienen que ser distintos. Tras **5 intentos fallidos en 1 minuto**, se rechaza cualquier PIN durante 60 s, para frenar la fuerza bruta. `pins.json` está en `.gitignore`: el repositorio es público y nunca debe subirse.
+
+**`audit.log`** (raíz del proyecto, UTF-8, solo se añaden líneas) registra con el formato `[YYYY-MM-DD HH:MM:SS] [ROL] [ACCIÓN] Detalle`:
+
+- Accesos correctos, intentos fallidos y cierres de sesión. El PIN tecleado **no** se guarda, solo su longitud.
+- Cambios de reparación: ID, estado anterior → nuevo y nota.
+- Cambios en `rules.json`: palabras añadidas o quitadas por lista, marcas y años.
+- Descargas de `respotes_limpio.xml`, `cuarentena.csv` y del CSV filtrado.
+
+En Modo Técnico, la pestaña **📜 Registro de Auditoría** lo muestra del más reciente al más antiguo, con filtro por tipo de acción y botón para descargar `audit.log`.
 
 ### Qué ofrece
 
@@ -177,7 +201,7 @@ Si no hay ninguna, la web arranca igualmente en la red local y la consola explic
   - **🧪 Problemas emergentes**: palabras y bigramas frecuentes en las incidencias sin clasificar bien. Se añaden a `rules.json` con un clic.
   - **✏️ Editor de reglas**: palabras clave, marcas y rango de años, con botón para restaurar los valores de fábrica.
   - Mapa de todas las reglas.
-- **Menú lateral** (☰): subir otro XML a mano, pausar el modo en vivo y ver la URL de la red local.
+- **Menú lateral** (☰): modo activo y «Cerrar sesión / Cambiar PIN», subir otro XML a mano, pausar el modo en vivo y ver la URL de la red local.
 
 También se puede lanzar directamente con Streamlit: `streamlit run web.py --server.address 0.0.0.0 -- --file ruta/al/respotes.xml`.
 
@@ -189,11 +213,12 @@ Para tener la web siempre disponible sin el PC encendido:
 2. En <https://share.streamlit.io>: **Create app** → repositorio, rama `main`, archivo principal **`web.py`**.
 3. En **Advanced settings**, elige Python 3.12 y, en *Secrets*:
    ```toml
-   MONITOR_CLAVE = "tu-contraseña"
+   PIN_CONSULTA = "4821"
+   PIN_TECNICO = "730915"
    ```
 4. **Deploy**. Streamlit instala `requirements.txt` y la web lee el XML del repositorio: cada `git push` con el XML actualizado se refleja solo.
 
-> En la nube, los cambios hechos desde la web en `rules.json` y `gestion.json` duran mientras la app esté activa: se pierden al reiniciarse. Para conservarlos, edita `rules.json` en el repositorio.
+> En la nube, los cambios hechos desde la web en `rules.json`, `gestion.json` y `audit.log` duran mientras la app esté activa: se pierden al reiniciarse. Para conservarlos, edita `rules.json` en el repositorio.
 
 **Si el móvil no conecta en la red local**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez).
 
@@ -218,6 +243,8 @@ Qué incluye:
 
 El workflow instala las dependencias, ejecuta los tests, regenera `index.html` y lo publica. Si un test falla, no se publica nada y se conserva la versión anterior.
 
+> El dashboard estático **no lleva PIN**: es de solo lectura (no edita nada) y cualquier PIN incrustado en un HTML público se podría leer en el código fuente.
+>
 > ⚠️ **Una web de GitHub Pages es pública**: cualquiera con la URL puede ver las incidencias (descripciones, zonas, códigos de equipo…), aunque el repositorio sea privado. No subas datos personales.
 
 ## Tests
@@ -257,6 +284,8 @@ app/
   analytics.py       Métricas, filtros, radar de zonas/equipos y minería de palabras
   exporter.py        JSON de válidas, respotes_limpio.xml y cuarentena.csv
   gestion.py         Estados de reparación en gestion.json
+  auth.py            PINs (pins.json / variables de entorno), roles y freno de fuerza bruta
+  audit.py           Registro de auditoría en audit.log
   tunel.py           Túnel público (cloudflared / ngrok / localtunnel) y QR en ASCII
   html_builder.py    Generador del dashboard estático index.html (GitHub Pages)
   estatico/          Plantilla, CSS y JavaScript del dashboard (motor.js = motor en el navegador)

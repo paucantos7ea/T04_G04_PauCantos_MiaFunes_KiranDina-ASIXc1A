@@ -18,10 +18,8 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hmac
 import html
 import math
-import os
 import re
 import sys
 import tempfile
@@ -47,6 +45,9 @@ from app.config import (CAT_BASURA, CAT_DESBORDE, CAT_FECHA, CAT_SIN_SENTIDO,  #
                         MIN_FALLOS_REINCIDENTE, MIN_FALLOS_VENTANA, NIVELES, PALABRAS_BASURA,
                         PASOS_SEVERIDAD, RE_CAMPO_CORTO, SEVERIDAD_POR_DEFECTO,
                         TIPO_ANOMALIA, TIPOS_DISPOSITIVO)
+from app import audit                                                         # noqa: E402
+from app.auth import (ROL_CONSULTA, ROL_TECNICO, AccesoBloqueado, ErrorAuth,  # noqa: E402
+                      GestorAuth)
 from app.exporter import (NOMBRE_CUARENTENA, NOMBRE_XML_LIMPIO, cuarentena_csv,  # noqa: E402
                           xml_limpio)
 from app.gestion import ErrorGestion, GestorReparaciones                      # noqa: E402
@@ -75,6 +76,8 @@ EMOJI_GESTION = {"Pendiente": "⏳", "En curso": "🛠️", "Resuelta": "✅"}
 COLOR_GESTION = {"Pendiente": "#8b8d98", "En curso": "#f5b70a", "Resuelta": "#30a46c"}
 POR_PAGINA_TARJETAS = 12
 GESTOR = GestorReparaciones()
+AUTH = GestorAuth()
+INSIGNIA_ROL = {ROL_CONSULTA: "👁️ Modo Consulta", ROL_TECNICO: "🛠️ Modo Técnico"}
 PLOTLY_CONFIG = {"displayModeBar": False, "scrollZoom": False, "responsive": True}
 
 CSS = """
@@ -765,14 +768,17 @@ def _listado(f: pd.DataFrame, datos: Analizador) -> None:
     d1, d2, d3 = st.columns(3)
     d1.download_button("⬇️ CSV (filtro actual)", f.drop(columns=["_busca", "pos", "Tipos"])
                        .to_csv(index=False).encode("utf-8-sig"),
-                       file_name="incidencias_filtradas.csv", mime="text/csv", width="stretch")
+                       file_name="incidencias_filtradas.csv", mime="text/csv", width="stretch",
+                       on_click=_auditar_descarga, args=("incidencias_filtradas.csv", len(f)))
     d2.download_button(f"🧼 {NOMBRE_XML_LIMPIO}", xml_bytes, file_name=NOMBRE_XML_LIMPIO,
                        mime="application/xml", width="stretch",
+                       on_click=_auditar_descarga, args=(NOMBRE_XML_LIMPIO, len(datos.validas)),
                        help=f"{len(datos.validas):,} incidencias VÁLIDAS ya auto-reparadas, con "
                             "la misma estructura que el XML original (sin basura ni texto "
                             "aleatorio).")
     d3.download_button(f"🚫 {NOMBRE_CUARENTENA}", csv_bytes, file_name=NOMBRE_CUARENTENA,
                        mime="text/csv", width="stretch",
+                       on_click=_auditar_descarga, args=(NOMBRE_CUARENTENA, len(datos.anomalas)),
                        help=f"{len(datos.anomalas):,} incidencias bloqueadas: una fila por "
                             "regla incumplida, con el campo afectado y el motivo exacto.")
 
@@ -805,8 +811,10 @@ def _tarjetas(f: pd.DataFrame, datos: Analizador) -> None:
     """Tarjetas táctiles desplegables para que el técnico marque el estado."""
     ss = st.session_state
     v = f[f["Estado"] == VALIDA]
+    accion = ("cambiar su estado o dejar una nota" if _puede_editar()
+              else "ver su estado (solo el Modo Técnico puede cambiarlo)")
     st.caption(f"**{len(v):,}** incidencias válidas con los filtros actuales · abre una "
-               "tarjeta para cambiar su estado o dejar una nota.".replace(",", "."))
+               f"tarjeta para {accion}.".replace(",", "."))
     if ss.get("error_gestion"):
         st.error(ss.error_gestion)
     if v.empty:
@@ -848,6 +856,12 @@ def _editor_reparacion(inc: Incidencia, clave: str) -> None:
         st.caption("Seguimiento no disponible: gestion.json no se puede leer.")
         return
     actual = ss.gestion.get(inc.id)
+    if not _puede_editar():                # Modo Consulta: solo lectura
+        estado = actual.estado if actual else ESTADO_GESTION_DEFECTO
+        st.markdown(f"**Estado:** {EMOJI_GESTION[estado]} {estado}"
+                    + (f" · **Nota:** {e(actual.nota)}" if actual and actual.nota else ""))
+        st.caption("🔒 Modo Consulta: solo el Modo Técnico puede cambiar el estado o la nota.")
+        return
     with st.form(f"form_rep_{clave}", border=False):
         nuevo = st.radio("Estado de la reparación", ESTADOS_GESTION, horizontal=True,
                          index=ESTADOS_GESTION.index(actual.estado) if actual else 0,
@@ -856,11 +870,19 @@ def _editor_reparacion(inc: Incidencia, clave: str) -> None:
                              max_chars=500, placeholder="Ej.: cambiado el cable HDMI",
                              key=f"rep_n_{clave}")
         if st.form_submit_button("💾 Guardar", type="primary", width="stretch"):
+            anterior = actual.estado if actual else ESTADO_GESTION_DEFECTO
+            nota_anterior = actual.nota if actual else ""
             try:
-                GESTOR.actualizar(inc.id, nuevo, nota)
+                guardado = GESTOR.actualizar(inc.id, nuevo, nota)
             except ErrorGestion as error:
                 st.error(str(error))
             else:
+                detalle = f"ID {inc.id}: estado {anterior} → {guardado.estado}"
+                if guardado.nota != nota_anterior:
+                    detalle += f"; nota «{nota_anterior}» → «{guardado.nota}»"
+                elif guardado.nota:
+                    detalle += f"; nota «{guardado.nota}»"
+                _auditar(audit.REPARACION, detalle)
                 ss.toast = (f"#{inc.id} → {nuevo}", EMOJI_GESTION[nuevo])
                 st.rerun()
     if actual and actual.actualizado:
@@ -1080,8 +1102,14 @@ def _emergentes(f: pd.DataFrame, datos: Analizador, reglas: Reglas) -> None:
         st.info("No hay términos nuevos frecuentes con los filtros actuales.", icon="🫥")
         return
     claves = list(ETIQUETAS_LISTAS)
-    destino = st.selectbox("Añadir a la lista", claves, index=claves.index("media_generico"),
-                           format_func=ETIQUETAS_LISTAS.get, key="em_destino")
+    editable = _puede_editar()
+    destino = "media_generico"
+    if editable:
+        destino = st.selectbox("Añadir a la lista", claves, index=claves.index("media_generico"),
+                               format_func=ETIQUETAS_LISTAS.get, key="em_destino")
+    else:
+        st.caption("🔒 Modo Consulta: puedes ver los términos, pero solo el Modo Técnico puede "
+                   "añadirlos a las reglas.")
     c1, c2 = st.columns([1.2, 1], gap="large")
     with c1:
         orden = terminos[::-1]
@@ -1099,13 +1127,14 @@ def _emergentes(f: pd.DataFrame, datos: Analizador, reglas: Reglas) -> None:
         for t in terminos:
             texto, boton = st.columns([3, 1], vertical_alignment="center")
             texto.markdown(f"`{e(t.texto)}` · {t.incidencias}")
-            if boton.button("➕", key=f"em_{t.tipo}_{t.texto}", help=f"Añadir «{t.texto}» a "
+            if editable and boton.button("➕", key=f"em_{t.tipo}_{t.texto}", help=f"Añadir «{t.texto}» a "
                             f"{ETIQUETAS_LISTAS[destino]}"):
                 try:
                     anadir_palabra(destino, t.texto)
                 except (ErrorReglas, OSError) as error:
                     st.error(f"No se ha podido añadir: {error}")
                 else:
+                    _auditar(audit.REGLAS, f"Palabra emergente añadida: {destino}: +{t.texto}")
                     st.session_state.toast = (f"«{t.texto}» añadida a "
                                               f"{ETIQUETAS_LISTAS[destino]}", "➕")
                     st.rerun()
@@ -1129,6 +1158,10 @@ def _editor_reglas(reglas: Reglas) -> None:
                "marcas, como palabra completa. Al guardar se recalcula todo el dataset.")
     if reglas.aviso:
         st.warning(reglas.aviso, icon="⚠️")
+    if not _puede_editar():
+        st.info("🔒 Modo Consulta: las reglas se pueden consultar abajo («Cómo se decide la "
+                "severidad»), pero solo el Modo Técnico puede editarlas.", icon="👁️")
+        return
     d, h = reglas.datos, reglas.huella
     textos: dict[str, str] = {}
     with st.form("editor_reglas"):
@@ -1167,10 +1200,13 @@ def _editor_reglas(reglas: Reglas) -> None:
         vacias = [ETIQUETAS_LISTAS[c] for c in ("sintomas", "dispositivos")
                   if not nuevos["lexico_tecnico"][c]]
         try:
-            guardar_reglas(nuevos)
+            guardadas = guardar_reglas(nuevos)
         except (ErrorReglas, OSError) as error:
             st.error(f"No se ha guardado: {error}")
         else:
+            cambios = audit.cambios_reglas(d, guardadas.datos)
+            _auditar(audit.REGLAS, "Editor de reglas: " + ("; ".join(cambios) if cambios
+                                                          else "guardado sin cambios"))
             if vacias:
                 st.session_state.toast = ("Guardado, pero con el léxico técnico vacío casi "
                                           "todas las descripciones se bloquearán", "⚠️")
@@ -1182,10 +1218,13 @@ def _editor_reglas(reglas: Reglas) -> None:
         st.write("Sustituye rules.json por las reglas originales del programa.")
         if st.button("Sí, restaurar", type="primary", key="r_restaurar"):
             try:
-                restaurar_reglas()
+                restauradas = restaurar_reglas()
             except (ErrorReglas, OSError) as error:
                 st.error(f"No se ha podido restaurar: {error}")
             else:
+                cambios = audit.cambios_reglas(d, restauradas.datos)
+                _auditar(audit.REGLAS, "Restaurados los valores de fábrica: "
+                         + ("; ".join(cambios) if cambios else "ya eran los de fábrica"))
                 st.session_state.toast = ("Reglas de fábrica restauradas", "↩️")
                 st.rerun()
 
@@ -1228,36 +1267,124 @@ def _inspector(f: pd.DataFrame, datos: Analizador) -> None:
 # Página
 # ══════════════════════════════════════════════════════════════════════════
 
-def _acceso_permitido() -> bool:
-    """Pide la contraseña si se ha definido MONITOR_CLAVE (o --clave en main.py)."""
-    clave = os.environ.get("MONITOR_CLAVE", "")
-    if not clave:
-        try:                                   # Streamlit Cloud: Settings → Secrets
-            clave = str(st.secrets.get("MONITOR_CLAVE", ""))
-        except Exception:                      # noqa: BLE001 — sin secrets.toml
-            clave = ""
-    if not clave or st.session_state.get("autenticado"):
+def _rol() -> str | None:
+    return st.session_state.get("rol")
+
+
+def _puede_editar() -> bool:
+    return GestorAuth.puede_editar(_rol())
+
+
+def _auditar(accion: str, detalle: str, rol: str | None = None) -> None:
+    """Escribe en audit.log; si el disco falla se avisa, pero la acción ya está hecha."""
+    try:
+        audit.registrar(rol or _rol() or audit.ROL_ANONIMO, accion, detalle)
+    except OSError as error:
+        st.session_state.toast = (f"No se ha podido escribir en audit.log: {error}", "⚠️")
+
+
+def _auditar_descarga(nombre: str, registros: int) -> None:
+    _auditar(audit.EXPORTACION, f"Descarga de {nombre} ({registros} registros)")
+
+
+TECLADO_NUMERICO = """<script>
+// Teclado numérico en el móvil para el campo PIN (Streamlit no expone inputmode)
+const doc = document;
+const poner = () => doc.querySelectorAll('input[type="password"]').forEach(
+  (c) => { c.setAttribute("inputmode", "numeric"); c.setAttribute("autocomplete", "off"); });
+poner(); new MutationObserver(poner).observe(doc.body, {childList: true, subtree: true});
+</script>"""
+
+
+def _pantalla_pin() -> bool:
+    """Tarjeta centrada para introducir el PIN. True si ya hay sesión."""
+    ss = st.session_state
+    if _rol():
         return True
-    st.markdown("## 🔒 Monitor XML de Incidencias")
-    with st.form("acceso"):
-        intento = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Entrar", type="primary"):
-            if hmac.compare_digest(intento.encode(), clave.encode()):
-                st.session_state.autenticado = True
+    _, centro, _ = st.columns([1, 2, 1])
+    with centro, st.container(border=True):
+        st.markdown("### 🔒 Monitor de incidencias")
+        st.caption("Introduce tu PIN. **Consulta**: ver datos, gráficos y descargas. "
+                   "**Técnico**: además, editar reglas y reparaciones.")
+        with st.form("acceso_pin", clear_on_submit=True, border=False):
+            pin = st.text_input("PIN", type="password", max_chars=12, placeholder="••••",
+                                label_visibility="collapsed")
+            entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
+        if entrar:
+            try:
+                rol = AUTH.verificar_pin(pin)
+            except AccesoBloqueado as error:
+                st.error(f"⏳ Demasiados intentos fallidos. Espera {error.segundos} s.")
+                return False
+            except ErrorAuth as error:
+                st.error(f"Configuración de PINs no válida: {error}")
+                return False
+            if rol:
+                ss.rol = rol
+                _auditar(audit.ACCESO, f"Inicio de sesión en {INSIGNIA_ROL[rol][3:]}", rol)
                 st.rerun()
-            st.error("Contraseña incorrecta.")
+            _auditar(audit.ACCESO_FALLIDO, f"PIN incorrecto ({len(pin.strip())} cifras)",
+                     audit.ROL_ANONIMO)
+            st.error("PIN incorrecto.")
+    st.html(TECLADO_NUMERICO, unsafe_allow_javascript=True)
     return False
+
+
+def _cerrar_sesion() -> None:
+    _auditar(audit.CIERRE_SESION, f"Cierre de sesión de {INSIGNIA_ROL[_rol()][3:]}")
+    for clave in ("rol",):
+        st.session_state.pop(clave, None)
+
+
+def _sesion_en_barra() -> None:
+    with st.sidebar:
+        st.markdown(f"### {INSIGNIA_ROL[_rol()]}")
+        if not _puede_editar():
+            st.caption("Solo lectura: no se pueden editar reglas ni reparaciones.")
+        st.button("🔑 Cerrar sesión / Cambiar PIN", on_click=_cerrar_sesion, width="stretch")
+        if _puede_editar() and AUTH.usa_valores_por_defecto():
+            st.warning("Se están usando los PINs de fábrica (1234 / 12345). Cámbialos en "
+                       "pins.json o con PIN_CONSULTA / PIN_TECNICO.", icon="🔓")
+        st.divider()
+
+
+def _registro_auditoria() -> None:
+    st.markdown("#### 📜 Registro de auditoría")
+    st.caption("Accesos, cambios de reparaciones y reglas y descargas, del más reciente al "
+               "más antiguo (audit.log).")
+    acciones = st.pills("Tipo de acción", audit.ACCIONES, selection_mode="multi",
+                        key="aud_acciones")
+    try:
+        eventos = audit.leer()
+    except OSError as error:
+        st.error(f"No se puede leer audit.log: {error}")
+        return
+    if acciones:
+        eventos = [ev for ev in eventos if ev.accion in acciones]
+    if audit.RUTA_AUDITORIA.exists():
+        st.download_button("⬇️ Descargar audit.log", audit.RUTA_AUDITORIA.read_bytes(),
+                           file_name="audit.log", mime="text/plain")
+    if not eventos:
+        st.info("Todavía no hay eventos con este filtro.", icon="🫥")
+        return
+    st.caption(f"{len(eventos):,} eventos".replace(",", ".")
+               + (" · se muestran los 1.000 más recientes" if len(eventos) > 1000 else ""))
+    st.dataframe(pd.DataFrame([{"Fecha": ev.fecha, "Rol": ev.rol, "Acción": ev.accion,
+                                "Detalle": ev.detalle} for ev in eventos[:1000]]),
+                 hide_index=True, height=480, key="t_auditoria",
+                 column_config={"Detalle": st.column_config.TextColumn(width="large")})
 
 
 def main() -> None:
     st.set_page_config(page_title="Monitor XML Incidencias", page_icon="📊", layout="wide",
                        initial_sidebar_state="collapsed")
     st.markdown(CSS, unsafe_allow_html=True)
-    if not _acceso_permitido():
+    if not _pantalla_pin():
         return
     _estado_inicial()
     ss = st.session_state
 
+    _sesion_en_barra()
     _barra_lateral()
     _sincronizar()
     ss.recien_sincronizado = True
@@ -1266,7 +1393,8 @@ def main() -> None:
         st.toast(mensaje, icon=icono)
         ss.toast = None
 
-    st.markdown('<div class="cabecera"><h1>📊 Monitor XML de Incidencias</h1></div>',
+    st.markdown('<div class="cabecera"><h1>📊 Monitor XML de Incidencias</h1>'
+                f'<span class="insignia">{INSIGNIA_ROL[_rol()]}</span></div>',
                 unsafe_allow_html=True)
     vivo = ss.fuente == "disco" and ss.get("en_vivo", True)
     st.fragment(_vigilante, run_every=INTERVALO_S if vivo else None)()
@@ -1295,9 +1423,14 @@ def main() -> None:
     with hueco_kpis:
         _kpis(filtrado, len(df))
 
-    panel, listado, auditoria = st.tabs(
-        ["📊 Panel", "📋 Incidencias", "🔍 Cómo se categoriza (Auditoría y Reglas)"],
-        key="pestana")
+    nombres = ["📊 Panel", "📋 Incidencias", "🔍 Cómo se categoriza (Auditoría y Reglas)"]
+    if _puede_editar():
+        nombres.append("📜 Registro de Auditoría")
+    pestanas = st.tabs(nombres, key="pestana")
+    panel, listado, auditoria = pestanas[:3]
+    if _puede_editar():
+        with pestanas[3]:
+            _registro_auditoria()
     with panel:
         _panel(filtrado, datos)
     with listado:

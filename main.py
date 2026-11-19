@@ -86,9 +86,6 @@ def crear_parser() -> argparse.ArgumentParser:
                              "menú de terminal")
     parser.add_argument("--port", type=int, default=PUERTO_WEB, metavar="N",
                         help=f"puerto de la interfaz web (por defecto {PUERTO_WEB})")
-    parser.add_argument("--clave", metavar="TEXTO",
-                        help="con --web: contraseña para entrar en la web "
-                             "(mejor: variable de entorno MONITOR_CLAVE, no queda en el historial)")
     parser.add_argument("--tunel", default="auto",
                         choices=["auto", "cloudflared", "ngrok", "localtunnel"],
                         help="con --web: herramienta de túnel público (por defecto, la primera "
@@ -156,15 +153,21 @@ def lanzar_web(args: argparse.Namespace) -> int:
 
     puerto = puerto_libre(args.port)
     ip = ip_local()
-    clave = args.clave or os.environ.get("MONITOR_CLAVE", "")
+    from app.auth import ErrorAuth, GestorAuth
+    auth = GestorAuth()
+    try:
+        auth.pins()                       # Crea pins.json si falta y valida la configuración
+        pins_de_fabrica = auth.usa_valores_por_defecto()
+    except ErrorAuth as error:
+        consola.print(panel_error("PINs no válidos", f"{error}\nCorrige pins.json o las "
+                                                      "variables PIN_CONSULTA / PIN_TECNICO."))
+        return 1
     comando = [sys.executable, "-m", "streamlit", "run", str(web),
                "--server.address", "0.0.0.0", "--server.port", str(puerto),
                "--server.headless", "true", "--browser.gatherUsageStats", "false"]
     if args.file:      # Ruta absoluta: el servidor no depende del directorio actual
         comando += ["--", "--file", str(limpiar_ruta(args.file))]
     entorno = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    if clave:
-        entorno["MONITOR_CLAVE"] = clave  # La web la lee del entorno, no de su línea de comandos
 
     try:
         servidor = subprocess.Popen(comando, env=entorno)
@@ -203,11 +206,12 @@ def lanzar_web(args: argparse.Namespace) -> int:
         if ip == "127.0.0.1":
             texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
                          style="yellow")
-        if clave:
-            texto.append("Protegido con contraseña.\n", style="green")
-        elif tunel:
-            texto.append("⚠ La URL pública la puede abrir CUALQUIERA que la tenga: protégela "
-                         "con --clave TEXTO (o la variable MONITOR_CLAVE).\n", style="bold red")
+        texto.append(f"Acceso por PIN (Consulta / Técnico), leído de {auth.origen()}.\n",
+                     style="green")
+        if pins_de_fabrica:
+            texto.append("⚠ Se usan los PINs de fábrica (1234 / 12345): cualquiera que los "
+                         "conozca entra. Cámbialos en pins.json o con PIN_CONSULTA / "
+                         "PIN_TECNICO.\n", style="bold red")
         texto.append("Ctrl+C detiene el servidor" + (" y el túnel." if tunel else "."),
                      style="dim")
 
