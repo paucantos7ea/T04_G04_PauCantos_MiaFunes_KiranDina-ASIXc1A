@@ -11,14 +11,30 @@
 {{CSS}}
 </style>
 </head>
-<body>
-<header class="cabecera">
+<body class="bloqueado">
+<div class="acceso" id="acceso" role="dialog" aria-modal="true" aria-labelledby="acceso-titulo">
+  <form class="acceso-caja" id="acceso-form" autocomplete="off">
+    <div class="acceso-icono" aria-hidden="true">🔒</div>
+    <h1 id="acceso-titulo">Monitor de incidencias</h1>
+    <p>Introduce tu PIN para ver el panel.<br><small><b>Consultor</b> o <b>Técnico</b></small></p>
+    <input id="acceso-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="12" placeholder="••••" aria-label="PIN" required autofocus>
+    <button class="boton boton-primario" type="submit">Entrar</button>
+    <p class="acceso-error" id="acceso-error" role="alert" hidden></p>
+  </form>
+</div>
+<noscript><p class="acceso-noscript">Esta página necesita JavaScript para pedir el PIN.</p></noscript>
+
+<header class="cabecera" inert>
   <div class="cabecera-fila">
     <div>
       <h1>Monitor de incidencias</h1>
       <p class="sello" id="sello">{{SELLO}}</p>
     </div>
     <div class="cabecera-acciones">
+      <span class="sesion" id="sesion" hidden>
+        <span class="insignia-rol" id="rol-activo"></span>
+        <button class="boton boton-discreto" id="cerrar-sesion" type="button">Cerrar sesión</button>
+      </span>
       <label class="boton boton-discreto" for="xml-local" title="Analiza otro XML en este navegador, sin subirlo a ningún sitio">
         Cargar otro XML local
       </label>
@@ -33,7 +49,7 @@
   </nav>
 </header>
 
-<main>
+<main inert>
   <section class="filtros" id="filtros" aria-label="Filtros">
     <input type="search" id="f-texto" placeholder="Buscar por ID (#42) o texto…" autocomplete="off" aria-label="Buscar">
     <select id="f-estado" aria-label="Estado">
@@ -78,7 +94,7 @@
   <section class="vista" id="vista-reglas" hidden></section>
 </main>
 
-<footer class="pie">Generado con <code>python3 main.py --html</code> a partir del XML del repositorio. Toca cualquier incidencia para ver por qué se clasificó así.</footer>
+<footer class="pie" inert>Generado con <code>python3 main.py --html</code> a partir del XML del repositorio. Toca cualquier incidencia para ver por qué se clasificó así.</footer>
 
 <dialog id="modal" aria-labelledby="modal-titulo">
   <div class="modal-cabecera">
@@ -95,6 +111,9 @@
 </script>
 <script>
 {{APP}}
+</script>
+<script>
+{{ACCESO}}
 </script>
 </body>
 </html>

@@ -184,3 +184,20 @@ details.regla summary { cursor: pointer; font-weight: 600; min-height: 32px; }
 .seccion-titulo { margin: 1.2rem 0 .2rem; font-size: 1.05rem; }
 
 .pie { max-width: 1280px; margin: 0 auto; padding: 0 16px 28px; color: var(--texto-suave); font-size: .78rem; }
+
+/* ── Pantalla de PIN ────────────────────────────────────────────────── */
+body.bloqueado > header, body.bloqueado > main, body.bloqueado > footer { display: none; }
+.acceso { min-height: 100dvh; display: grid; place-items: center; padding: 16px; }
+.acceso[hidden] { display: none; }
+.acceso-caja { width: min(360px, 100%); background: var(--superficie); border: 1px solid var(--borde); border-radius: 18px; padding: 28px 22px; text-align: center; box-shadow: var(--sombra); }
+.acceso-icono { font-size: 2rem; }
+.acceso-caja h1 { font-size: 1.25rem; margin: .3rem 0; }
+.acceso-caja p { color: var(--texto-suave); margin: .3rem 0 1rem; font-size: .92rem; }
+.acceso-caja input { width: 100%; font-size: 1.5rem; letter-spacing: .4em; text-align: center; padding: .55rem; min-height: 48px; border-radius: 12px; border: 1px solid var(--borde); background: var(--superficie-2); color: var(--texto); }
+.acceso-caja .boton { width: 100%; margin-top: .8rem; min-height: 48px; justify-content: center; }
+.boton-primario { background: var(--acento); border-color: var(--acento); color: #fff; font-weight: 600; }
+.acceso-error { color: var(--error) !important; font-weight: 600; margin: .8rem 0 0 !important; }
+.acceso-noscript { text-align: center; padding: 2rem; }
+.sesion { display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.sesion[hidden] { display: none; }
+.insignia-rol { padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--borde); background: var(--superficie-2); font-size: .85rem; white-space: nowrap; }

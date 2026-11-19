@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Protocol
 
-from app.config import (CATEGORIA_POR_DEFECTO, MIN_FALLOS_CRONICO, MIN_FALLOS_REINCIDENTE,
-                        MIN_FALLOS_VENTANA, TENDENCIA_CALIENTE, TENDENCIA_VIGILAR,
-                        MINERIA_IGNORAR, RE_CAMPO_CODIGO, RE_CAMPO_ZONA, STOPWORDS,
-                        VENTANA_RECIENTE_DIAS)
+from app.config import (CATEGORIA_POR_DEFECTO, ESTADO_GESTION_DEFECTO, MARGEN_DUPLICADO_DIAS,
+                        MIN_FALLOS_CRONICO, MIN_FALLOS_REINCIDENTE, MIN_FALLOS_VENTANA,
+                        MIN_TORMENTA, MINERIA_IGNORAR, NIVELES, RE_CAMPO_CODIGO, RE_CAMPO_ZONA,
+                        SLA_HORAS, STOPWORDS, TENDENCIA_CALIENTE, TENDENCIA_VIGILAR,
+                        UMBRAL_DUPLICADO, VENTANA_RECIENTE_DIAS, VENTANA_TORMENTA_DIAS)
 from app.models import EstadisticasResumen, Incidencia
 from app.parser import XMLParser
 from app.rules import Reglas
@@ -303,3 +307,267 @@ def palabras_emergentes(incidencias: list[Incidencia], patrones_conocidos: list[
     palabras = [t for t in salida if t.tipo == "Palabra"][:top]
     bigramas = [t for t in salida if t.tipo == "Bigrama"][:top]
     return palabras + bigramas
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Incidencias masivas (tormentas) y tickets duplicados
+# ══════════════════════════════════════════════════════════════════════════
+
+def zona_de(inc: Incidencia) -> str:
+    """Planta u oficina de la incidencia («Primera planta», «Recepció»…), o ""."""
+    return _valor(inc, RE_CAMPO_ZONA)
+
+
+def sintoma_de(inc: Incidencia) -> str:
+    """Síntoma principal: el paso del motor que decidió la severidad, sin el número."""
+    criterio = inc.criterio_severidad or ""
+    return criterio.split(" · ", 1)[-1] if criterio else inc.tipo
+
+
+def _peor(severidades) -> str:
+    presentes = set(severidades)
+    return next((n for n in NIVELES if n in presentes), "")
+
+
+@dataclass
+class Tormenta:
+    """Varias incidencias de la misma planta/oficina y categoría en pocos días."""
+    zona: str
+    categoria: str
+    desde: date
+    hasta: date
+    sintoma: str                    # Síntoma más repetido del grupo
+    ids: list[str]
+    severidad: str                  # La más grave del grupo
+
+    @property
+    def n(self) -> int:
+        return len(self.ids)
+
+
+def detectar_tormentas(incidencias: list[Incidencia], minimo: int = MIN_TORMENTA,
+                       ventana_dias: int = VENTANA_TORMENTA_DIAS) -> list[Tormenta]:
+    """Agrupa las válidas por (planta/oficina, categoría) y, dentro de cada
+    grupo, encadena las que distan como mucho `ventana_dias` días de la anterior
+    (0 = el mismo día). Un grupo con ≥ `minimo` incidencias es una tormenta.
+
+    Orden: las más grandes primero; a igual tamaño, las más recientes.
+    """
+    grupos: dict[tuple[str, str], list[Incidencia]] = defaultdict(list)
+    for inc in incidencias:
+        if inc.valida and inc.fecha and (zona := zona_de(inc)):
+            grupos[(zona, inc.tipo)].append(inc)
+    tormentas = []
+    for (zona, categoria), lista in grupos.items():
+        lista.sort(key=lambda i: (i.fecha, i.id))
+        tramo: list[Incidencia] = []
+        for inc in [*lista, None]:                      # None = cierra el último tramo
+            if inc is not None and tramo and (inc.fecha - tramo[-1].fecha).days <= ventana_dias:
+                tramo.append(inc)
+                continue
+            if len(tramo) >= minimo:
+                tormentas.append(Tormenta(
+                    zona, categoria, tramo[0].fecha, tramo[-1].fecha,
+                    Counter(sintoma_de(i) for i in tramo).most_common(1)[0][0],
+                    [i.id for i in tramo], _peor(i.severidad for i in tramo)))
+            tramo = [inc] if inc is not None else []
+    return sorted(tormentas, key=lambda t: (t.n, t.hasta), reverse=True)
+
+
+@dataclass
+class GrupoDuplicado:
+    """Tickets que describen lo mismo en el mismo equipo/ubicación.
+
+    El primero (más antiguo) se considera el original; el resto, duplicados."""
+    equipo: str                     # Código de inventario (o equipo + zona si no hay)
+    zona: str
+    desde: date
+    hasta: date
+    ids: list[str]
+    similitud: float                # Similitud mínima entre parejas enlazadas (0-1)
+    descripcion: str                # Texto del original
+
+    @property
+    def original(self) -> str:
+        return self.ids[0]
+
+    @property
+    def duplicados(self) -> list[str]:
+        return self.ids[1:]
+
+
+def similitud(a: str, b: str) -> float:
+    """Similitud 0-1 entre dos descripciones (sin tildes, mayúsculas ni espacios extra)."""
+    a, b = " ".join(normalizar(a).split()), " ".join(normalizar(b).split())
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+def detectar_duplicados(incidencias: list[Incidencia], umbral: float = UMBRAL_DUPLICADO,
+                        margen_dias: int = MARGEN_DUPLICADO_DIAS) -> list[GrupoDuplicado]:
+    """Parejas de válidas del MISMO equipo (código de inventario; si no hay,
+    equipo + zona) con fechas a ≤ `margen_dias` días y descripciones con
+    similitud ≥ `umbral`. Las parejas se encadenan: si A≈B y B≈C, es un grupo."""
+    grupos: dict[str, list[Incidencia]] = defaultdict(list)
+    for inc in incidencias:
+        if not (inc.valida and inc.fecha):
+            continue
+        clave = _valor(inc, RE_CAMPO_CODIGO).upper()
+        if not clave and inc.equipo:
+            clave = f"{normalizar(inc.equipo)} @ {normalizar(zona_de(inc))}"
+        if clave:
+            grupos[clave].append(inc)
+
+    salida = []
+    for clave, lista in grupos.items():
+        if len(lista) < 2:
+            continue
+        lista.sort(key=lambda i: (i.fecha, i.id))
+        padre = list(range(len(lista)))
+
+        def raiz(x: int) -> int:
+            while padre[x] != x:
+                padre[x] = padre[padre[x]]
+                x = padre[x]
+            return x
+
+        minima: dict[int, float] = {}
+        for a in range(len(lista)):
+            for b in range(a + 1, len(lista)):
+                if (lista[b].fecha - lista[a].fecha).days > margen_dias:
+                    break                               # Ordenadas: las siguientes, más lejos
+                s = similitud(lista[a].descripcion, lista[b].descripcion)
+                if s >= umbral:
+                    ra, rb = raiz(a), raiz(b)
+                    padre[rb] = ra
+                    minima[ra] = min(s, minima.get(ra, 1.0), minima.pop(rb, 1.0))
+        componentes: dict[int, list[int]] = defaultdict(list)
+        for x in range(len(lista)):
+            componentes[raiz(x)].append(x)
+        for r, miembros in componentes.items():
+            if len(miembros) < 2:
+                continue
+            incs = [lista[x] for x in sorted(miembros)]
+            salida.append(GrupoDuplicado(
+                clave, zona_de(incs[0]), incs[0].fecha, incs[-1].fecha, [i.id for i in incs],
+                round(min(minima.get(raiz(x), 1.0) for x in miembros), 3), incs[0].descripcion))
+    return sorted(salida, key=lambda g: (len(g.ids), g.hasta), reverse=True)
+
+
+def unicas_estimadas(validas: int, tormentas: list[Tormenta],
+                     duplicados: list[GrupoDuplicado]) -> int:
+    """Incidencias «reales» si cada tormenta y cada grupo de duplicados contara
+    como un solo fallo (sin descontar dos veces las que están en ambos)."""
+    redundantes: set[str] = set()
+    for grupo in [*tormentas, *duplicados]:
+        redundantes.update(grupo.ids[1:])
+    return max(0, validas - len(redundantes))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Tiempos de resolución: MTTR y SLA
+# ══════════════════════════════════════════════════════════════════════════
+
+class _Seguimiento(Protocol):            # gestion.EstadoReparacion (sin importarlo: sin ciclos)
+    estado: str
+    duracion_minutos: float | None
+
+
+@dataclass
+class ResumenMTTR:
+    """Tiempo medio de resolución (minutos) de las resueltas con tiempo medido."""
+    minutos: float | None
+    resueltas: int
+    por_severidad: dict[str, tuple[float, int]]      # nivel -> (media en minutos, n)
+
+
+def calcular_mttr(incidencias: list[Incidencia],
+                  seguimiento: Mapping[str, _Seguimiento]) -> ResumenMTTR:
+    """MTTR global y por severidad. Solo cuentan las válidas resueltas que
+    tienen `duracion_minutos` (pasaron por «En curso» antes de resolverse)."""
+    por_nivel: dict[str, list[float]] = defaultdict(list)
+    vistos: set[str] = set()
+    for inc in incidencias:
+        if not inc.valida or inc.id in vistos:
+            continue
+        vistos.add(inc.id)
+        g = seguimiento.get(inc.id)
+        if g and g.estado == "Resuelta" and g.duracion_minutos is not None:
+            por_nivel[inc.severidad].append(float(g.duracion_minutos))
+    todas = [m for lista in por_nivel.values() for m in lista]
+    return ResumenMTTR(
+        sum(todas) / len(todas) if todas else None, len(todas),
+        {n: (sum(por_nivel[n]) / len(por_nivel[n]), len(por_nivel[n]))
+         for n in NIVELES if por_nivel.get(n)})
+
+
+def formato_duracion(minutos: float | None) -> str:
+    """45 min · 3 h 20 min · 2 d 4 h  («—» si no hay dato)."""
+    if minutos is None:
+        return "—"
+    minutos = round(minutos)
+    if minutos < 60:
+        return f"{minutos} min"
+    horas, resto = divmod(minutos, 60)
+    if horas < 48:
+        return f"{horas} h {resto} min" if resto else f"{horas} h"
+    dias, horas = divmod(horas, 24)
+    return f"{dias} d {horas} h" if horas else f"{dias} d"
+
+
+RE_MARCA_TEMPS = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?")
+
+
+def apertura(inc: Incidencia) -> datetime | None:
+    """Cuándo se abrió el ticket: la «Marca de temps» del formulario y, si no
+    se puede leer, la fecha de la incidencia a las 00:00."""
+    marca = inc.campos.get("Marca de temps", "")
+    if m := RE_MARCA_TEMPS.match(marca):
+        d, mes, a, h, mi, s = m.groups()
+        try:
+            return datetime(int(a), int(mes), int(d), int(h), int(mi), int(s or 0))
+        except ValueError:
+            pass
+    return datetime.combine(inc.fecha, datetime.min.time()) if inc.fecha else None
+
+
+@dataclass
+class AlertaSLA:
+    id: str
+    severidad: str
+    estado: str
+    abierta_desde: datetime
+    horas_abierta: float
+    limite_horas: int
+    zona: str
+    equipo: str
+    descripcion: str
+
+    @property
+    def exceso_horas(self) -> float:
+        return self.horas_abierta - self.limite_horas
+
+
+def fuera_de_sla(incidencias: list[Incidencia], seguimiento: Mapping[str, _Seguimiento],
+                 ahora: datetime | None = None,
+                 limites: Mapping[str, int] | None = None) -> list[AlertaSLA]:
+    """Válidas de severidad con SLA (Crítica/Alta) que siguen sin resolver y
+    llevan abiertas más horas de las permitidas. Las más graves y viejas primero."""
+    ahora = ahora or datetime.now()
+    limites = SLA_HORAS if limites is None else limites
+    alertas, vistos = [], set()
+    for inc in incidencias:
+        limite = limites.get(inc.severidad)
+        if not inc.valida or limite is None or inc.id in vistos:
+            continue
+        vistos.add(inc.id)
+        g = seguimiento.get(inc.id)
+        estado = g.estado if g else ESTADO_GESTION_DEFECTO
+        if estado == "Resuelta" or (desde := apertura(inc)) is None:
+            continue
+        horas = (ahora - desde).total_seconds() / 3600
+        if horas > limite:
+            alertas.append(AlertaSLA(inc.id, inc.severidad, estado, desde, horas, limite,
+                                     zona_de(inc), inc.equipo, inc.descripcion))
+    return sorted(alertas, key=lambda a: (NIVELES.index(a.severidad), -a.horas_abierta))

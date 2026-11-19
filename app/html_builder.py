@@ -21,17 +21,28 @@ en la tabla S y los registros las referencian por índice, -1 = sin valor):
 La configuración del motor (expresiones regulares, reglas de rules.json,
 límites...) también se exporta para que app/estatico/motor.js pueda analizar en
 el navegador otro XML con EXACTAMENTE las mismas reglas.
+
+Pantalla de PIN: la página se abre bloqueada y pide el PIN de Consultor o de
+Técnico (pins.json o PIN_CONSULTA / PIN_TECNICO). En el HTML NO van los PINs,
+solo su SHA-256 con una sal aleatoria. Aun así es una barrera de cortesía, no
+seguridad real: un sitio estático no puede ocultar sus propios datos (van
+embebidos en la página) y un PIN de 4-5 cifras se prueba entero en segundos.
+Para datos confidenciales hay que usar la web con servidor (main.py --web).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import secrets
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 
 from app import config as cfg
 from app.analytics import Analizador, _valor, analizar_archivo
+from app.auth import ROL_CONSULTA, ROL_TECNICO, GestorAuth
 from app.models import Incidencia
 from app.rules import Reglas, cargar_reglas
 
@@ -146,8 +157,24 @@ def _ahora() -> datetime:
         return datetime.now()
 
 
+def huella_pin(sal: str, pin: str) -> str:
+    """SHA-256 hexadecimal de «sal:pin» (lo mismo calcula plantilla.html en el navegador)."""
+    return hashlib.sha256(f"{sal}:{pin}".encode("utf-8")).hexdigest()
+
+
+def acceso_embebido(pins: Mapping[str, str] | None = None, sal: str | None = None) -> dict:
+    """{"sal": ..., "huellas": [[sha256, rol], ...]} para la pantalla de PIN.
+
+    Sin `pins` se leen de pins.json / variables de entorno (lanza ErrorAuth si
+    la configuración no es válida: mejor no publicar que publicar sin PIN)."""
+    pins = pins if pins is not None else GestorAuth().pins()
+    sal = sal or secrets.token_hex(16)
+    return {"sal": sal, "huellas": [[huella_pin(sal, pins["consulta"]), ROL_CONSULTA],
+                                    [huella_pin(sal, pins["tecnico"]), ROL_TECNICO]]}
+
+
 def datos_embebidos(datos: Analizador, reglas: Reglas, ahora: datetime | None = None,
-                    hoy: date | None = None) -> dict:
+                    hoy: date | None = None, pins: Mapping[str, str] | None = None) -> dict:
     ahora = ahora or _ahora()
     s = _Tabla()
     registros = [_registro(inc, s) for inc in datos.todas]
@@ -157,6 +184,7 @@ def datos_embebidos(datos: Analizador, reglas: Reglas, ahora: datetime | None = 
                  "total": datos.resumen.total, "validas": datos.resumen.validas,
                  "anomalas": datos.resumen.anomalas, "reglas": reglas.huella},
         "config": configuracion_motor(reglas),
+        "acceso": acceso_embebido(pins),
         "S": s.cadenas,
         "I": registros,
     }
@@ -177,9 +205,9 @@ def _estatico(nombre: str) -> str:
 
 
 def generar_html(datos: Analizador, reglas: Reglas, ahora: datetime | None = None,
-                 hoy: date | None = None) -> str:
+                 hoy: date | None = None, pins: Mapping[str, str] | None = None) -> str:
     """index.html completo como texto."""
-    carga = datos_embebidos(datos, reglas, ahora, hoy)
+    carga = datos_embebidos(datos, reglas, ahora, hoy, pins)
     meta = carga["meta"]
     sello = (f"Actualizado: {meta['generado']} · {meta['total']:,} registros procesados · "
              f"{meta['validas']:,} válidas · fuente: {meta['fuente']}").replace(",", ".")
@@ -187,6 +215,7 @@ def generar_html(datos: Analizador, reglas: Reglas, ahora: datetime | None = Non
     for marca, contenido in (("{{CSS}}", _estatico("dashboard.css")),
                              ("{{MOTOR}}", _estatico("motor.js")),
                              ("{{APP}}", _estatico("dashboard.js")),
+                             ("{{ACCESO}}", _estatico("acceso.js")),
                              ("{{SELLO}}", sello.replace("&", "&amp;").replace("<", "&lt;"))):
         html = html.replace(marca, contenido)
     return html.replace("{{DATOS}}", _json_seguro(carga))   # Los datos, los últimos

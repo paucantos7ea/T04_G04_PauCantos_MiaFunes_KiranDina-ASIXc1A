@@ -7,4 +7,5 @@ headless = true              # No pide email ni intenta abrir un navegador en el
 gatherUsageStats = false
 
 [theme]
+base = "light"               # Tema Claro por defecto (el selector ☀️/🌙 de la cabecera lo cambia por sesión)
 primaryColor = "#3e63dd"

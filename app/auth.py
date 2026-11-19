@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Autenticación por PIN con dos niveles de acceso.
 
-    PIN de consulta -> rol «Consulta» (solo lectura)
+    PIN de consulta -> rol «Consultor» (solo lectura)
     PIN de técnico  -> rol «Técnico»  (lectura y edición: reglas y reparaciones)
 
 Origen de los PINs, por prioridad:
@@ -31,7 +31,7 @@ from pathlib import Path
 from app.config import RAIZ_PROYECTO
 
 RUTA_PINS = RAIZ_PROYECTO / "pins.json"
-ROL_CONSULTA = "Consulta"
+ROL_CONSULTA = "Consultor"
 ROL_TECNICO = "Técnico"
 ROLES = (ROL_CONSULTA, ROL_TECNICO)
 PINS_POR_DEFECTO = {"consulta": "1234", "tecnico": "12345"}
@@ -153,7 +153,7 @@ class GestorAuth:
     # ── Verificación ───────────────────────────────────────────────────────
 
     def verificar_pin(self, pin: str) -> str | None:
-        """Rol del PIN («Consulta» o «Técnico») o None si es incorrecto.
+        """Rol del PIN («Consultor» o «Técnico») o None si es incorrecto.
 
         Lanza AccesoBloqueado si hay demasiados intentos fallidos recientes y
         ErrorAuth si la configuración de PINs es inválida (se deniega todo).

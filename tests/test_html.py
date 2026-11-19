@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -26,6 +28,7 @@ from app.html_builder import datos_embebidos, generar_html
 NAVEGADOR = next((r for n in ("chromium", "chromium-browser", "google-chrome",
                               "google-chrome-stable") if (r := shutil.which(n))), None)
 AHORA = datetime(2026, 11, 19, 10, 30)
+PINES = {"consulta": "1234", "tecnico": "12345"}
 
 
 def _carga(html: str) -> dict:
@@ -70,7 +73,7 @@ def casos(tmp_path, reglas):
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_html_autocontenido(casos, reglas):
-    html = generar_html(casos, reglas, AHORA, HOY)
+    html = generar_html(casos, reglas, AHORA, HOY, PINES)
     assert html.startswith("<!doctype html>")
     assert "{{" not in html                                   # Ninguna marca sin sustituir
     assert "Actualizado: 19/11/2026 10:30" in html
@@ -82,7 +85,7 @@ def test_html_autocontenido(casos, reglas):
 
 
 def test_datos_embebidos_coinciden(casos, reglas):
-    carga = _carga(generar_html(casos, reglas, AHORA, HOY))
+    carga = _carga(generar_html(casos, reglas, AHORA, HOY, PINES))
     assert carga["meta"]["total"] == 21
     assert carga["meta"]["validas"] == casos.resumen.validas
     S = carga["S"]
@@ -95,7 +98,7 @@ def test_datos_embebidos_coinciden(casos, reglas):
 
 def test_el_xml_no_puede_cerrar_el_script(tmp_path, reglas):
     ruta = escribir_xml(tmp_path / "x.xml", [inc("1", desc="No funciona </script><script>alert(1)</script>")])
-    html = generar_html(analizar_archivo(ruta, hoy=HOY, reglas=reglas), reglas, AHORA, HOY)
+    html = generar_html(analizar_archivo(ruta, hoy=HOY, reglas=reglas), reglas, AHORA, HOY, PINES)
     bloque = re.search(r'id="datos">(.*?)</script>', html, re.S).group(1)
     assert "<" not in bloque                                  # Todo «<» va como <
     assert "</script><script>alert(1)" in json.dumps(_carga(html), ensure_ascii=False)
@@ -103,7 +106,7 @@ def test_el_xml_no_puede_cerrar_el_script(tmp_path, reglas):
 
 def test_valores_gigantes_se_recortan(tmp_path, reglas):
     ruta = escribir_xml(tmp_path / "x.xml", [inc("1", desc="No funciona " + "a" * 5000)])
-    carga = datos_embebidos(analizar_archivo(ruta, hoy=HOY, reglas=reglas), reglas, AHORA, HOY)
+    carga = datos_embebidos(analizar_archivo(ruta, hoy=HOY, reglas=reglas), reglas, AHORA, HOY, PINES)
     assert max(len(t) for t in carga["S"]) < 700
 
 
@@ -112,7 +115,8 @@ def test_main_html_genera_index(tmp_path):
     salida = tmp_path / "web" / "index.html"
     salida.parent.mkdir()
     proceso = subprocess.run(["python3", str(RAIZ / "main.py"), "--html", "--file", str(xml),
-                              "--salida", str(salida)], capture_output=True, text=True, timeout=120)
+                              "--salida", str(salida)], capture_output=True, text=True, timeout=120,
+                             env={**os.environ, "PIN_CONSULTA": "2468", "PIN_TECNICO": "13579"})
     assert proceso.returncode == 0, proceso.stderr
     assert _carga(salida.read_text(encoding="utf-8"))["meta"]["validas"] == 1
 
@@ -184,7 +188,7 @@ def _paridad(html: str, tmp_path: Path, xml: str) -> dict:
 @pytest.mark.skipif(NAVEGADOR is None, reason="no hay Chromium/Chrome instalado")
 def test_paridad_motor_js_casos_dificiles(casos, reglas, tmp_path):
     xml = casos.ruta.read_text(encoding="utf-8")
-    res = _paridad(generar_html(casos, reglas, AHORA, HOY), tmp_path, xml)
+    res = _paridad(generar_html(casos, reglas, AHORA, HOY, PINES), tmp_path, xml)
     assert "error" not in res, res.get("error")
     assert res["py"] == res["js"] == 21
     assert res["total"] == 0, res["difs"]
@@ -195,7 +199,64 @@ def test_paridad_motor_js_casos_dificiles(casos, reglas, tmp_path):
 def test_paridad_motor_js_xml_real(reglas, tmp_path):
     ruta = RAIZ / "incidencies.xml"
     datos = analizar_archivo(ruta, hoy=HOY, reglas=reglas)
-    res = _paridad(generar_html(datos, reglas, AHORA, HOY), tmp_path, ruta.read_text(encoding="utf-8"))
+    res = _paridad(generar_html(datos, reglas, AHORA, HOY, PINES), tmp_path, ruta.read_text(encoding="utf-8"))
     assert "error" not in res, res.get("error")
     assert res["py"] == res["js"] == datos.resumen.total
     assert res["total"] == 0, res["difs"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Pantalla de PIN del index.html
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_index_sin_pins_en_claro(casos, reglas):
+    html = generar_html(casos, reglas, AHORA, HOY, {"consulta": "4826", "tecnico": "97531"})
+    acceso = _carga(html)["acceso"]
+    sin_huellas = re.sub(r"[0-9a-f]{32,}", "", html)            # (una huella podría contenerlo)
+    assert "4826" not in sin_huellas and "97531" not in sin_huellas   # Nunca el PIN en claro
+    huellas = {rol: h for h, rol in acceso["huellas"]}
+    assert huellas["Consultor"] == hashlib.sha256(f"{acceso['sal']}:4826".encode()).hexdigest()
+    assert huellas["Técnico"] == hashlib.sha256(f"{acceso['sal']}:97531".encode()).hexdigest()
+    assert '<body class="bloqueado">' in html and "<main inert>" in html
+
+
+ARNES_PIN = r"""
+<script>
+(() => {
+  const r = {};
+  const enviar = (pin) => { document.getElementById("acceso-pin").value = pin;
+                            document.getElementById("acceso-form").requestSubmit(); };
+  r.sha = window.Acceso.sha256("sal:PIN ñ€ " + "x".repeat(80));
+  r.alAbrir = document.body.classList.contains("bloqueado");
+  enviar("0000");
+  r.trasFallo = document.body.classList.contains("bloqueado");
+  r.error = document.getElementById("acceso-error").textContent;
+  enviar("1234");
+  r.trasAcierto = document.body.classList.contains("bloqueado");
+  r.rol = document.documentElement.dataset.rol;
+  document.getElementById("cerrar-sesion").click();
+  r.trasCerrar = document.body.classList.contains("bloqueado");
+  const pre = document.createElement("pre"); pre.id = "resultado-pin";
+  pre.textContent = JSON.stringify(r); document.body.append(pre);
+})();
+</script>
+"""
+
+
+@pytest.mark.skipif(NAVEGADOR is None, reason="no hay Chromium/Chrome instalado")
+def test_pantalla_pin_en_el_navegador(casos, reglas, tmp_path):
+    html = generar_html(casos, reglas, AHORA, HOY, PINES)
+    pagina = tmp_path / "pin.html"
+    pagina.write_text(html.replace("</body>", ARNES_PIN + "</body>"), encoding="utf-8")
+    dom = subprocess.run(
+        [NAVEGADOR, "--headless=new", "--no-sandbox", "--disable-gpu",
+         f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=20000",
+         "--dump-dom", pagina.as_uri()], capture_output=True, text=True, timeout=180).stdout
+    m = re.search(r'<pre id="resultado-pin">(.*?)</pre>', dom, re.S)
+    assert m, "el arnés del PIN no ha escrito resultados"
+    import html as html_mod
+    r = json.loads(html_mod.unescape(m.group(1)))
+    assert r["sha"] == hashlib.sha256(("sal:PIN ñ€ " + "x" * 80).encode()).hexdigest()
+    assert r["alAbrir"] and r["trasFallo"] and r["error"] == "PIN incorrecto."
+    assert not r["trasAcierto"] and r["rol"] == "Consultor"
+    assert r["trasCerrar"]

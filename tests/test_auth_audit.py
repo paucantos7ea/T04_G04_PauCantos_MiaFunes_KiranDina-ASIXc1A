@@ -148,14 +148,14 @@ def test_formato_de_linea():
 
 def test_escritura_y_lectura(tmp_path):
     ruta = tmp_path / "audit.log"
-    audit.registrar("Consulta", audit.ACCESO, "Inicio de sesión en Modo Consulta", ruta,
+    audit.registrar("Consultor", audit.ACCESO, "Inicio de sesión en Modo Consultor", ruta,
                     datetime(2026, 11, 19, 9, 0, 0))
     audit.registrar("Anónimo", audit.ACCESO_FALLIDO, "PIN incorrecto (4 cifras)", ruta,
                     datetime(2026, 11, 19, 9, 1, 0))
     audit.registrar("Técnico", audit.EXPORTACION, "Descarga de cuarentena.csv (3 registros)",
                     ruta, datetime(2026, 11, 19, 9, 2, 0))
     lineas = ruta.read_text(encoding="utf-8").splitlines()
-    assert len(lineas) == 3 and lineas[0].startswith("[2026-11-19 09:00:00] [Consulta] [ACCESO]")
+    assert len(lineas) == 3 and lineas[0].startswith("[2026-11-19 09:00:00] [Consultor] [ACCESO]")
     eventos = audit.leer(ruta)
     assert [e.accion for e in eventos] == [audit.EXPORTACION, audit.ACCESO_FALLIDO, audit.ACCESO]
     assert eventos[0].rol == "Técnico" and "cuarentena.csv" in eventos[0].detalle

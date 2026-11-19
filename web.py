@@ -37,19 +37,22 @@ import plotly.graph_objects as go        # noqa: E402
 import streamlit as st                   # noqa: E402
 
 from app.analytics import (NIVEL_CALIENTE, NIVEL_CRONICO, NIVEL_VIGILAR,     # noqa: E402
-                           Analizador, analizar_archivo, equipos_reincidentes,
-                           fecha_referencia, palabras_emergentes, radar_zonas, zonas_por_mes)
+                           Analizador, analizar_archivo, calcular_mttr, detectar_duplicados,
+                           detectar_tormentas, equipos_reincidentes, fecha_referencia,
+                           formato_duracion, fuera_de_sla, palabras_emergentes, radar_zonas,
+                           unicas_estimadas, zonas_por_mes)
 from app.config import (CAT_BASURA, CAT_DESBORDE, CAT_FECHA, CAT_SIN_SENTIDO,  # noqa: E402
                         CAT_VACIO, ESTADO_GESTION_DEFECTO, ESTADOS_GESTION, ETIQUETAS_LISTAS,
-                        MAPA_SEVERIDAD, MAX_FICHA, MAX_LONGITUD_CORTO, MIN_FALLOS_CRONICO,
-                        MIN_FALLOS_REINCIDENTE, MIN_FALLOS_VENTANA, NIVELES, PALABRAS_BASURA,
-                        PASOS_SEVERIDAD, RE_CAMPO_CORTO, SEVERIDAD_POR_DEFECTO,
-                        TIPO_ANOMALIA, TIPOS_DISPOSITIVO)
+                        MAPA_SEVERIDAD, MARGEN_DUPLICADO_DIAS, MAX_FICHA, MAX_LONGITUD_CORTO,
+                        MIN_FALLOS_CRONICO, MIN_FALLOS_REINCIDENTE, MIN_FALLOS_VENTANA,
+                        MIN_TORMENTA, NIVELES, PALABRAS_BASURA, PASOS_SEVERIDAD,
+                        RE_CAMPO_CORTO, SEVERIDAD_POR_DEFECTO, SLA_HORAS, TIPO_ANOMALIA,
+                        TIPOS_DISPOSITIVO, UMBRAL_DUPLICADO, VENTANA_TORMENTA_DIAS)
 from app import audit                                                         # noqa: E402
 from app.auth import (ROL_CONSULTA, ROL_TECNICO, AccesoBloqueado, ErrorAuth,  # noqa: E402
                       GestorAuth)
-from app.exporter import (NOMBRE_CUARENTENA, NOMBRE_XML_LIMPIO, cuarentena_csv,  # noqa: E402
-                          xml_limpio)
+from app.exporter import (NOMBRE_CUARENTENA, NOMBRE_INFORME, NOMBRE_XML_LIMPIO,  # noqa: E402
+                          cuarentena_csv, informe_estado, xml_limpio)
 from app.gestion import ErrorGestion, GestorReparaciones                      # noqa: E402
 from app.models import ErrorCarga, Incidencia                                 # noqa: E402
 from app.rules import (ErrorReglas, Reglas, anadir_palabra, cargar_reglas,    # noqa: E402
@@ -77,7 +80,11 @@ COLOR_GESTION = {"Pendiente": "#8b8d98", "En curso": "#f5b70a", "Resuelta": "#30
 POR_PAGINA_TARJETAS = 12
 GESTOR = GestorReparaciones()
 AUTH = GestorAuth()
-INSIGNIA_ROL = {ROL_CONSULTA: "👁️ Modo Consulta", ROL_TECNICO: "🛠️ Modo Técnico"}
+INSIGNIA_ROL = {ROL_CONSULTA: "👁️ Modo Consultor", ROL_TECNICO: "🛠️ Modo Técnico"}
+CLARO, OSCURO = "☀️ Claro", "🌙 Oscuro"
+PLANTILLA_PLOTLY = {CLARO: "plotly_white", OSCURO: "plotly_dark"}
+INTERVALO_AUDITORIA_S = 3        # Refresco de la tabla de auditoría
+POR_PAGINA_GRUPOS = 10
 PLOTLY_CONFIG = {"displayModeBar": False, "scrollZoom": False, "responsive": True}
 
 CSS = """
@@ -98,8 +105,12 @@ CSS = """
 .kpi .valor {font-size:1.9rem; font-weight:700; line-height:1.15;}
 .kpi .sub {font-size:.82rem; opacity:.8;}
 .kpi .nuevo {color:#30a46c; font-weight:600;}
-@media (max-width: 900px) {.kpis {grid-template-columns:repeat(2, minmax(0,1fr));}}
-@media (max-width: 480px) {.kpis {grid-template-columns:1fr;} .cabecera h1 {font-size:1.35rem;}}
+.kpis.cinco {grid-template-columns:repeat(5, minmax(0,1fr));}
+@media (max-width: 1100px) {.kpis.cinco {grid-template-columns:repeat(3, minmax(0,1fr));}}
+@media (max-width: 900px) {.kpis, .kpis.cinco {grid-template-columns:repeat(2, minmax(0,1fr));}}
+@media (max-width: 480px) {.kpis, .kpis.cinco {grid-template-columns:1fr;} .cabecera h1 {font-size:1.35rem;}}
+.kpi .alerta {color:#e5484d; font-weight:600;}
+.grupo-ids {font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.82rem; overflow-wrap:anywhere;}
 .tarjetas {display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:.75rem; margin:.4rem 0 1rem;}
 .regla {border:1px solid rgba(127,127,127,.25); border-top:4px solid var(--acento);
   border-radius:.7rem; padding:.7rem .9rem; background:rgba(127,127,127,.05);}
@@ -131,6 +142,70 @@ CSS = """
 .anomalia {border-left:4px solid #e5484d; padding:.5rem .8rem; margin:.4rem 0;
   background:rgba(229,72,77,.06); border-radius:.4rem; font-size:.88rem; overflow-wrap:anywhere;}
 .anomalia code {white-space:pre-wrap;}
+</style>
+"""
+
+# Tema oscuro por sesión: Streamlit no permite cambiar su tema desde Python para
+# un solo usuario (solo para todo el servidor), así que se superpone con CSS.
+# Las tablas (st.dataframe) se pintan en <canvas>: se invierten con un filtro.
+CSS_OSCURO = """
+<style>
+:root {--o-fondo:#0e1117; --o-sup:#171b24; --o-sup2:#202634; --o-borde:#2e3545; --o-texto:#e6e8ee;
+  --o-suave:#a3a9b6;}
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+[data-testid="stHeader"], [data-testid="stBottomBlockContainer"] {background:var(--o-fondo) !important;
+  color:var(--o-texto) !important; color-scheme:dark;}
+[data-testid="stSidebar"], [data-testid="stSidebarContent"] {background:var(--o-sup) !important;}
+.stApp p, .stApp span, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp h4,
+.stApp h5, .stApp h6, .stApp td, .stApp th, .stApp summary, .stApp small,
+[data-testid="stMarkdownContainer"], [data-testid="stCaptionContainer"],
+[data-testid="stWidgetLabel"] {color:var(--o-texto) !important;}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * {color:var(--o-suave) !important;}
+.stApp code {background:var(--o-sup2) !important; color:#ffb4c8 !important;}
+[data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="textarea"],
+[data-baseweb="select"] > div, [data-baseweb="input"] input, [data-baseweb="textarea"] textarea,
+[data-testid="stNumberInputContainer"], [data-testid="stNumberInput"] button,
+[data-testid="stFileUploaderDropzone"] {background:var(--o-sup2) !important;
+  color:var(--o-texto) !important; border-color:var(--o-borde) !important;}
+input, textarea {color:var(--o-texto) !important; -webkit-text-fill-color:var(--o-texto) !important;
+  caret-color:var(--o-texto);}
+[data-baseweb="popover"], [data-baseweb="popover"] ul, [data-baseweb="menu"], [role="listbox"],
+[role="option"], [data-baseweb="calendar"], [data-baseweb="calendar"] * ,
+[data-testid="stPopoverBody"], [data-testid="stToast"] {background:var(--o-sup) !important;
+  color:var(--o-texto) !important;}
+[role="option"]:hover, [aria-selected="true"][role="option"] {background:var(--o-sup2) !important;}
+[data-baseweb="tag"] {background:#3e63dd !important;}
+.stApp button[kind="secondary"], .stApp button[kind^="pills"], .stApp button[kind^="segmented"],
+.stApp [data-testid^="stBaseButton-secondary"], .stApp [data-testid="stPopoverButton"],
+.stApp [data-testid="stDownloadButton"] button:not([kind="primary"]) {
+  background:var(--o-sup2) !important; color:var(--o-texto) !important; border-color:var(--o-borde) !important;}
+.stApp button[kind$="Active"] {background:#2a3a6e !important; border-color:#6e8bff !important;}
+[data-testid="stExpander"] details, [data-testid="stExpander"] summary,
+[data-testid="stVerticalBlockBorderWrapper"], [data-testid="stForm"] {background:transparent !important;
+  border-color:var(--o-borde) !important;}
+[data-testid="stExpander"] summary:hover {background:var(--o-sup2) !important;}
+[data-testid="stTab"] p {color:var(--o-suave) !important;}
+[data-testid="stTab"][aria-selected="true"] p {color:var(--o-texto) !important;}
+[data-baseweb="tab-border"] {background:var(--o-borde) !important;}
+[data-testid$="RootElement"], [data-testid="stDateInputField"],
+[data-testid="stSelectbox"] [data-rac] > div, [data-testid="stMultiSelect"] [data-rac] > div
+  {background:var(--o-sup2) !important; border-color:var(--o-borde) !important;}
+input::placeholder, textarea::placeholder {color:var(--o-suave) !important;
+  -webkit-text-fill-color:var(--o-suave) !important;}
+.stApp button[data-variant] {background:var(--o-sup2) !important; color:var(--o-texto) !important;
+  border-color:var(--o-borde) !important;}
+.stApp button[data-variant] * {color:var(--o-texto) !important;}
+.stApp button[data-variant][aria-pressed="true"], .stApp button[data-variant][aria-checked="true"]
+  {background:#2a3a6e !important; border-color:#6e8bff !important;}
+[data-testid="stAlertContainer"] {background:rgba(62,99,221,.18) !important;}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {background:rgba(229,72,77,.2) !important;}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {background:rgba(245,183,10,.16) !important;}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {background:rgba(48,164,108,.2) !important;}
+[data-testid="stAlertContainer"] * {color:var(--o-texto) !important;}
+[data-testid="stDataFrame"] {filter:invert(.92) hue-rotate(180deg);}
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] * {color:var(--o-texto) !important;}
+.kpi, .regla, .insignia {background:rgba(255,255,255,.04) !important;}
+hr {border-color:var(--o-borde) !important;}
 </style>
 """
 
@@ -497,7 +572,7 @@ def _filtros(df: pd.DataFrame) -> pd.DataFrame:
 # KPIs y gráficos
 # ══════════════════════════════════════════════════════════════════════════
 
-def _kpis(f: pd.DataFrame, total_xml: int) -> None:
+def _kpis(f: pd.DataFrame, total_xml: int, mttr, alertas: list) -> None:
     n = len(f)
     val = int((f["Estado"] == VALIDA).sum())
     blo = n - val
@@ -513,17 +588,28 @@ def _kpis(f: pd.DataFrame, total_xml: int) -> None:
         return (f'<div class="kpi" style="--acento:{acento}"><div class="etiqueta">{etiqueta}'
                 f'</div><div class="valor">{valor}</div><div class="sub">{sub}</div></div>')
 
-    st.markdown('<div class="kpis">'
+    sla = (f'<span class="alerta">⏰ {len(alertas)} fuera de SLA</span>' if alertas
+           else "✅ todo dentro de SLA")
+    st.markdown('<div class="kpis cinco">'
                 + tarjeta("Total procesadas", f"{n:,}".replace(",", "."), sub_total, "#3e63dd")
                 + tarjeta("Válidas", f"{val:,}".replace(",", "."), pct(val), "#30a46c")
                 + tarjeta("Bloqueadas", f"{blo:,}".replace(",", "."), pct(blo), "#e5484d")
                 + tarjeta("Críticas / Altas", f"{crit + alta:,}".replace(",", "."),
                           f"🔴 {crit} críticas · 🟠 {alta} altas", "#f76b15")
+                + tarjeta("MTTR", formato_duracion(mttr.minutos),
+                          f"{mttr.resueltas} resueltas medidas · {sla}", "#8e4ec6")
                 + "</div>", unsafe_allow_html=True)
 
 
+def _tema() -> str:
+    return st.session_state.get("tema") or CLARO
+
+
 def _estilo(fig: go.Figure, alto: int = 330, leyenda: bool = True) -> go.Figure:
-    """Diseño táctil: sin zoom/arrastre accidental al hacer scroll en el móvil."""
+    """Diseño táctil: sin zoom/arrastre accidental al hacer scroll en el móvil.
+    Plantilla plotly_white / plotly_dark según el tema elegido en la cabecera."""
+    fig.update_layout(template=PLANTILLA_PLOTLY[_tema()], paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)")
     fig.update_layout(height=alto, margin=dict(l=8, r=8, t=10, b=8), dragmode=False,
                       showlegend=leyenda, hovermode="closest",
                       legend=dict(orientation="h", yanchor="top", y=-0.12, x=0, title=None))
@@ -533,7 +619,7 @@ def _estilo(fig: go.Figure, alto: int = 330, leyenda: bool = True) -> go.Figure:
 
 
 def _pintar(fig: go.Figure, clave: str) -> None:
-    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, theme="streamlit", key=clave)
+    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, theme=None, key=clave)
 
 
 def _vacio(mensaje: str = "Sin incidencias válidas con estos filtros.") -> None:
@@ -617,7 +703,32 @@ def _grafico_ranking(f: pd.DataFrame, columna: str, titulo: str, color: str, cla
     _pintar(_estilo(fig, alto=max(240, 34 * len(conteo) + 40), leyenda=False), clave)
 
 
+def _alerta_sla(alertas: list) -> None:
+    """Aviso visual de Críticas/Altas abiertas más tiempo del permitido."""
+    limites = " · ".join(f"{EMOJI_NIVEL[n]} {n}: {h} h" for n, h in SLA_HORAS.items())
+    if not alertas:
+        st.success(f"⏰ Ningún ticket crítico o alto supera su SLA ({limites}).")
+        return
+    por_nivel = Counter(a.severidad for a in alertas)
+    st.error(f"⏰ **{len(alertas):,} tickets fuera de SLA** sin resolver: ".replace(",", ".")
+             + " · ".join(f"{EMOJI_NIVEL[n]} {por_nivel[n]} {n.lower()}s" for n in NIVELES
+                          if por_nivel.get(n)) + f"  ·  Límites: {limites}")
+    with st.expander(f"Ver los tickets fuera de SLA ({len(alertas)})"):
+        st.dataframe(pd.DataFrame([{
+            "ID": a.id, "Severidad": f"{EMOJI_NIVEL[a.severidad]} {a.severidad}",
+            "Estado": f"{EMOJI_GESTION[a.estado]} {a.estado}", "Abierta desde": a.abierta_desde,
+            "Tiempo abierta": formato_duracion(a.horas_abierta * 60),
+            "Exceso": formato_duracion(a.exceso_horas * 60), "Planta / oficina": a.zona or "—",
+            "Equipo": truncar(a.equipo, 30) or "—", "Descripción": truncar(a.descripcion, 100)}
+            for a in alertas]), hide_index=True, height=320, key="t_sla",
+            column_config={"Abierta desde": st.column_config.DatetimeColumn(
+                format="DD/MM/YYYY HH:mm")})
+        st.caption("Abierta desde = «Marca de temps» del formulario (o la fecha de la "
+                   "incidencia). Se cierra el aviso al marcarla como Resuelta.")
+
+
 def _panel(f: pd.DataFrame, datos: Analizador) -> None:
+    _alerta_sla(st.session_state.alertas_sla)
     c1, c2 = st.columns(2, gap="large")
     with c1:
         _grafico_donut(f)
@@ -655,6 +766,16 @@ def _progreso_reparaciones(f: pd.DataFrame) -> None:
                  category_orders={"Severidad": NIVELES, "Reparación": ESTADOS_GESTION})
     fig.update_layout(barmode="stack")
     _pintar(_estilo(fig, alto=230), "g_reparaciones")
+    mttr = st.session_state.mttr
+    st.markdown(f"**⏱️ Tiempo medio de resolución (MTTR): {formato_duracion(mttr.minutos)}**"
+                f" · {mttr.resueltas} reparaciones con tiempo medido")
+    if mttr.por_severidad:
+        cols = st.columns(len(mttr.por_severidad))
+        for col, (nivel, (minutos, n)) in zip(cols, mttr.por_severidad.items()):
+            col.metric(f"{EMOJI_NIVEL[nivel]} {nivel}", formato_duracion(minutos), f"{n} resueltas",
+                       delta_color="off")
+    st.caption("El tiempo se mide desde que el técnico la pasa a «En curso» hasta que la marca "
+               "«Resuelta» (gestion.json: fecha_inicio → fecha_resolucion).")
 
 
 def _radar(f: pd.DataFrame, datos: Analizador) -> None:
@@ -829,7 +950,8 @@ def _tarjetas(f: pd.DataFrame, datos: Analizador) -> None:
         inc = datos.todas[int(pos)]
         estado = ss.gestion.get(inc.id)
         nombre = estado.estado if estado else ESTADO_GESTION_DEFECTO
-        titulo = (f"{EMOJI_GESTION[nombre]} #{inc.id} · {EMOJI_NIVEL.get(inc.severidad, '')} "
+        sla = "⏰ FUERA DE SLA · " if inc.id in ss.ids_sla else ""
+        titulo = (f"{sla}{EMOJI_GESTION[nombre]} #{inc.id} · {EMOJI_NIVEL.get(inc.severidad, '')} "
                   f"{inc.severidad} · {truncar(inc.equipo, 22) or '—'} — "
                   f"{truncar(inc.descripcion, 55)}")
         with st.expander(titulo):
@@ -856,11 +978,13 @@ def _editor_reparacion(inc: Incidencia, clave: str) -> None:
         st.caption("Seguimiento no disponible: gestion.json no se puede leer.")
         return
     actual = ss.gestion.get(inc.id)
-    if not _puede_editar():                # Modo Consulta: solo lectura
+    if not _puede_editar():                # Modo Consultor: solo lectura
         estado = actual.estado if actual else ESTADO_GESTION_DEFECTO
         st.markdown(f"**Estado:** {EMOJI_GESTION[estado]} {estado}"
                     + (f" · **Nota:** {e(actual.nota)}" if actual and actual.nota else ""))
-        st.caption("🔒 Modo Consulta: solo el Modo Técnico puede cambiar el estado o la nota.")
+        if actual:
+            st.caption(_tiempos(actual))
+        st.caption("🔒 Modo Consultor: solo el Modo Técnico puede cambiar el estado o la nota.")
         return
     with st.form(f"form_rep_{clave}", border=False):
         nuevo = st.radio("Estado de la reparación", ESTADOS_GESTION, horizontal=True,
@@ -885,8 +1009,21 @@ def _editor_reparacion(inc: Incidencia, clave: str) -> None:
                 _auditar(audit.REPARACION, detalle)
                 ss.toast = (f"#{inc.id} → {nuevo}", EMOJI_GESTION[nuevo])
                 st.rerun()
-    if actual and actual.actualizado:
-        st.caption(f"Última actualización: {actual.actualizado.replace('T', ' ')}")
+    if actual:
+        st.caption(_tiempos(actual))
+
+
+def _tiempos(g) -> str:
+    """Marcas de tiempo de gestion.json en una línea legible."""
+    fmt = lambda iso: iso.replace("T", " ") if iso else "—"  # noqa: E731
+    partes = [f"Última actualización: {fmt(g.actualizado)}",
+              f"▶️ Inicio: {fmt(g.fecha_inicio)}"]
+    if g.fecha_resolucion:
+        partes.append(f"✅ Resuelta: {fmt(g.fecha_resolucion)}")
+        partes.append(f"⏱️ Duración: {formato_duracion(g.duracion_minutos)}"
+                      if g.duracion_minutos is not None
+                      else "⏱️ Sin duración (no pasó por «En curso»)")
+    return " · ".join(partes)
 
 
 def _ficha(inc: Incidencia, origen: str = "ficha") -> None:
@@ -1108,7 +1245,7 @@ def _emergentes(f: pd.DataFrame, datos: Analizador, reglas: Reglas) -> None:
         destino = st.selectbox("Añadir a la lista", claves, index=claves.index("media_generico"),
                                format_func=ETIQUETAS_LISTAS.get, key="em_destino")
     else:
-        st.caption("🔒 Modo Consulta: puedes ver los términos, pero solo el Modo Técnico puede "
+        st.caption("🔒 Modo Consultor: puedes ver los términos, pero solo el Modo Técnico puede "
                    "añadirlos a las reglas.")
     c1, c2 = st.columns([1.2, 1], gap="large")
     with c1:
@@ -1159,7 +1296,7 @@ def _editor_reglas(reglas: Reglas) -> None:
     if reglas.aviso:
         st.warning(reglas.aviso, icon="⚠️")
     if not _puede_editar():
-        st.info("🔒 Modo Consulta: las reglas se pueden consultar abajo («Cómo se decide la "
+        st.info("🔒 Modo Consultor: las reglas se pueden consultar abajo («Cómo se decide la "
                 "severidad»), pero solo el Modo Técnico puede editarlas.", icon="👁️")
         return
     d, h = reglas.datos, reglas.huella
@@ -1264,6 +1401,123 @@ def _inspector(f: pd.DataFrame, datos: Analizador) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# Incidencias masivas (tormentas) y duplicadas
+# ══════════════════════════════════════════════════════════════════════════
+
+def _estado_grupo(ids: list[str]) -> str:
+    estados = [g.estado if (g := st.session_state.gestion.get(i)) else ESTADO_GESTION_DEFECTO
+               for i in ids]
+    if all(x == "Resuelta" for x in estados):
+        return "✅ Resuelta"
+    return "🛠️ En curso" if any(x != "Pendiente" for x in estados) else "⏳ Pendiente"
+
+
+def _paginar(n: int, clave: str) -> int:
+    paginas = max(1, math.ceil(n / POR_PAGINA_GRUPOS))
+    if paginas == 1:
+        return 0
+    pagina = int(st.number_input(f"Página (de {paginas})", min_value=1, max_value=paginas,
+                                 value=1, step=1, key=clave))
+    return (min(pagina, paginas) - 1) * POR_PAGINA_GRUPOS
+
+
+def _masivas(f: pd.DataFrame, datos: Analizador) -> None:
+    st.markdown("#### ⚡ Incidencias masivas y duplicadas")
+    st.caption("Un mismo fallo puede llegar como muchos tickets: una **tormenta** es un grupo de "
+               "incidencias de la misma categoría en la misma planta u oficina en pocos días; un "
+               "**duplicado** es el mismo problema reportado dos veces sobre el mismo equipo. "
+               "Agruparlos evita que un único fallo masivo distorsione las estadísticas. "
+               "Se analizan las incidencias válidas con los filtros actuales.")
+    with st.expander("⚙️ Ajustar la detección"):
+        c1, c2, c3, c4 = st.columns(4)
+        minimo = c1.number_input("Mín. incidencias por tormenta", 2, 50, MIN_TORMENTA, key="m_min")
+        ventana = c2.number_input("Ventana entre incidencias (días)", 0, 30,
+                                  VENTANA_TORMENTA_DIAS, key="m_ventana",
+                                  help="0 = el mismo día; 1 = encadena días consecutivos…")
+        umbral = c3.slider("Similitud para duplicado", 0.5, 1.0, UMBRAL_DUPLICADO, 0.05,
+                           key="m_umbral", help="difflib.SequenceMatcher sobre la descripción.")
+        margen = c4.number_input("Margen entre duplicados (días)", 0, 60,
+                                 MARGEN_DUPLICADO_DIAS, key="m_margen")
+    incidencias = [datos.todas[int(p)] for p in f["pos"] if datos.todas[int(p)].valida]
+    tormentas = detectar_tormentas(incidencias, int(minimo), int(ventana))
+    duplicados = detectar_duplicados(incidencias, float(umbral), int(margen))
+    activas = [t for t in tormentas if _estado_grupo(t.ids) != "✅ Resuelta"]
+    extra = sum(len(g.duplicados) for g in duplicados)
+    unicas = unicas_estimadas(len(incidencias), tormentas, duplicados)
+
+    def tarjeta(etiqueta: str, valor: object, sub: str, acento: str) -> str:
+        return (f'<div class="kpi" style="--acento:{acento}"><div class="etiqueta">{etiqueta}'
+                f'</div><div class="valor">{valor}</div><div class="sub">{sub}</div></div>')
+
+    st.markdown('<div class="kpis">'
+                + tarjeta("⚡ Tormentas activas", len(activas),
+                          f"de {len(tormentas)} detectadas · "
+                          f"{sum(t.n for t in activas)} incidencias", "#e5484d")
+                + tarjeta("👯 Tickets duplicados", extra,
+                          f"en {len(duplicados)} grupos", "#f76b15")
+                + tarjeta("🏢 Plantas afectadas", len({t.zona for t in activas}),
+                          "con alguna tormenta activa", "#8e4ec6")
+                + tarjeta("🎯 Fallos reales estimados", f"{unicas:,}".replace(",", "."),
+                          f"de {len(incidencias):,} válidas".replace(",", "."), "#30a46c")
+                + "</div>", unsafe_allow_html=True)
+
+    tab_t, tab_d = st.tabs([f"⚡ Tormentas ({len(tormentas)})",
+                            f"👯 Duplicados ({len(duplicados)})"])
+    with tab_t:
+        if not tormentas:
+            _vacio("No hay tormentas de incidencias con estos filtros y ajustes.")
+        else:
+            por_zona = Counter()
+            for t in tormentas:
+                por_zona[t.zona] += t.n
+            orden = por_zona.most_common()[::-1]
+            fig = go.Figure(go.Bar(
+                x=[n for _, n in orden], y=[z for z, _ in orden], orientation="h",
+                marker_color="#e5484d", text=[n for _, n in orden], textposition="outside",
+                cliponaxis=False,
+                hovertemplate="<b>%{y}</b><br>%{x} incidencias en tormentas<extra></extra>"))
+            st.markdown("**Incidencias en tormentas por planta / oficina**")
+            _pintar(_estilo(fig, alto=max(200, 40 * len(orden) + 40), leyenda=False), "g_tormentas")
+            inicio = _paginar(len(tormentas), "pag_tormentas")
+            for t in tormentas[inicio:inicio + POR_PAGINA_GRUPOS]:
+                fechas = (f"{t.desde:%d/%m/%Y}" if t.desde == t.hasta
+                          else f"{t.desde:%d/%m/%Y} – {t.hasta:%d/%m/%Y}")
+                with st.expander(f"⚡ {t.zona} · {fechas} · {t.n} incidencias · {t.categoria} · "
+                                 f"{t.sintoma} · {_estado_grupo(t.ids)}"):
+                    st.markdown(f"**Planta / oficina:** {e(t.zona)} · **Fecha:** {fechas} · "
+                                f"**Síntoma principal:** {e(t.sintoma)} · **Severidad máx.:** "
+                                f"{EMOJI_NIVEL.get(t.severidad, '')} {e(t.severidad)}")
+                    st.markdown('<div class="grupo-ids">IDs afectados: '
+                                + ", ".join(f"#{e(i)}" for i in t.ids) + "</div>",
+                                unsafe_allow_html=True)
+                    filas = [datos.por_id(i)[0] for i in t.ids if datos.por_id(i)]
+                    st.dataframe(pd.DataFrame([{
+                        "ID": i.id, "Severidad": i.severidad, "Equipo": truncar(i.equipo, 30),
+                        "Descripción": truncar(i.descripcion, 110)} for i in filas]),
+                        hide_index=True, key=f"t_torm_{t.zona}_{t.categoria}_{t.desde}_{t.ids[0]}")
+    with tab_d:
+        if not duplicados:
+            _vacio("No hay tickets duplicados con estos filtros y ajustes.")
+        else:
+            inicio = _paginar(len(duplicados), "pag_duplicados")
+            for g in duplicados[inicio:inicio + POR_PAGINA_GRUPOS]:
+                fechas = (f"{g.desde:%d/%m/%Y}" if g.desde == g.hasta
+                          else f"{g.desde:%d/%m/%Y} – {g.hasta:%d/%m/%Y}")
+                with st.expander(f"👯 {g.equipo} · {g.zona or '—'} · {fechas} · "
+                                 f"{len(g.ids)} tickets · similitud {g.similitud:.0%}"):
+                    st.markdown(f"**Equipo:** {e(g.equipo)} · **Planta / oficina:** "
+                                f"{e(g.zona or '—')} · **Original:** #{e(g.original)} · "
+                                f"**Duplicados:** {', '.join('#' + e(i) for i in g.duplicados)}")
+                    st.caption(f"«{truncar(g.descripcion, 200)}»")
+                    filas = [x for i in g.ids for x in datos.por_id(i)[:1]]
+                    st.dataframe(pd.DataFrame([{
+                        "ID": i.id, "Fecha": pd.Timestamp(i.fecha) if i.fecha else pd.NaT,
+                        "Descripción": truncar(i.descripcion, 120)} for i in filas]),
+                        hide_index=True, key=f"t_dup_{g.equipo}_{g.original}",
+                        column_config={"Fecha": st.column_config.DateColumn(format="DD/MM/YYYY")})
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # Página
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1296,16 +1550,14 @@ poner(); new MutationObserver(poner).observe(doc.body, {childList: true, subtree
 </script>"""
 
 
-def _pantalla_pin() -> bool:
-    """Tarjeta centrada para introducir el PIN. True si ya hay sesión."""
+def _pantalla_pin() -> None:
+    """Gatekeeper: tarjeta centrada para introducir el PIN (lo único que se ve sin sesión)."""
     ss = st.session_state
-    if _rol():
-        return True
     _, centro, _ = st.columns([1, 2, 1])
     with centro, st.container(border=True):
         st.markdown("### 🔒 Monitor de incidencias")
-        st.caption("Introduce tu PIN. **Consulta**: ver datos, gráficos y descargas. "
-                   "**Técnico**: además, editar reglas y reparaciones.")
+        st.caption("Introduce tu PIN. **Consultor**: ver datos, gráficos, informes y descargas. "
+                   "**Técnico**: además, editar reglas y reparaciones y ver la auditoría.")
         with st.form("acceso_pin", clear_on_submit=True, border=False):
             pin = st.text_input("PIN", type="password", max_chars=12, placeholder="••••",
                                 label_visibility="collapsed")
@@ -1315,19 +1567,19 @@ def _pantalla_pin() -> bool:
                 rol = AUTH.verificar_pin(pin)
             except AccesoBloqueado as error:
                 st.error(f"⏳ Demasiados intentos fallidos. Espera {error.segundos} s.")
-                return False
+                _auditar(audit.ACCESO_FALLIDO, "Intento durante el bloqueo por fuerza bruta",
+                         audit.ROL_ANONIMO)
             except ErrorAuth as error:
                 st.error(f"Configuración de PINs no válida: {error}")
-                return False
-            if rol:
-                ss.rol = rol
-                _auditar(audit.ACCESO, f"Inicio de sesión en {INSIGNIA_ROL[rol][3:]}", rol)
-                st.rerun()
-            _auditar(audit.ACCESO_FALLIDO, f"PIN incorrecto ({len(pin.strip())} cifras)",
-                     audit.ROL_ANONIMO)
-            st.error("PIN incorrecto.")
+            else:
+                if rol:
+                    ss.rol = rol
+                    _auditar(audit.ACCESO, f"Inicio de sesión en {INSIGNIA_ROL[rol][3:]}", rol)
+                    st.rerun()
+                _auditar(audit.ACCESO_FALLIDO, f"PIN incorrecto ({len(pin.strip())} cifras)",
+                         audit.ROL_ANONIMO)
+                st.error("PIN incorrecto.")
     st.html(TECLADO_NUMERICO, unsafe_allow_javascript=True)
-    return False
 
 
 def _cerrar_sesion() -> None:
@@ -1336,24 +1588,53 @@ def _cerrar_sesion() -> None:
         st.session_state.pop(clave, None)
 
 
-def _sesion_en_barra() -> None:
-    with st.sidebar:
-        st.markdown(f"### {INSIGNIA_ROL[_rol()]}")
-        if not _puede_editar():
-            st.caption("Solo lectura: no se pueden editar reglas ni reparaciones.")
-        st.button("🔑 Cerrar sesión / Cambiar PIN", on_click=_cerrar_sesion, width="stretch")
-        if _puede_editar() and AUTH.usa_valores_por_defecto():
+def _aviso_pins_de_fabrica() -> None:
+    if _puede_editar() and AUTH.usa_valores_por_defecto():
+        with st.sidebar:
             st.warning("Se están usando los PINs de fábrica (1234 / 12345). Cámbialos en "
                        "pins.json o con PIN_CONSULTA / PIN_TECNICO.", icon="🔓")
-        st.divider()
+
+
+def _cabecera(datos: Analizador | None) -> None:
+    """Título, tema, informe y sesión; debajo, rol activo + indicador en vivo."""
+    ss = st.session_state
+    titulo, tema, informe, salir = st.columns([3.2, 1.6, 1.9, 1.3], vertical_alignment="center")
+    titulo.markdown('<div class="cabecera"><h1>📊 Monitor XML de Incidencias</h1></div>',
+                    unsafe_allow_html=True)
+    tema.segmented_control("Tema", [CLARO, OSCURO], default=CLARO, required=True, key="tema",
+                           label_visibility="collapsed")
+    if datos is not None:
+        seguimiento = dict(ss.get("gestion") or {})
+        informe.download_button(
+            "📄 Descargar Informe Ejecutivo", lambda: informe_estado(datos, seguimiento),
+            file_name=NOMBRE_INFORME, mime="text/html", type="primary", width="stretch",
+            on_click=_auditar_descarga, args=(NOMBRE_INFORME, len(datos.todas)),
+            help="Informe HTML listo para imprimir o guardar como PDF: KPIs, plantas más "
+                 "afectadas, tormentas, duplicados, severidad y SLA.")
+    salir.button("🔑 Cerrar sesión", on_click=_cerrar_sesion, width="stretch")
+    rol, vivo = st.columns([1, 4], vertical_alignment="center")
+    rol.markdown(f'<span class="insignia">{INSIGNIA_ROL[_rol()]}</span>', unsafe_allow_html=True)
+    with vivo:
+        en_vivo = ss.fuente == "disco" and ss.get("en_vivo", True)
+        st.fragment(_vigilante, run_every=INTERVALO_S if en_vivo else None)()
 
 
 def _registro_auditoria() -> None:
-    st.markdown("#### 📜 Registro de auditoría")
-    st.caption("Accesos, cambios de reparaciones y reglas y descargas, del más reciente al "
-               "más antiguo (audit.log).")
-    acciones = st.pills("Tipo de acción", audit.ACCIONES, selection_mode="multi",
+    st.markdown("#### 📜 Auditoría de cambios")
+    st.caption("Accesos (y PINs fallidos), cambios de reparaciones y de reglas, y descargas, del "
+               "más reciente al más antiguo. Se actualiza sola cada "
+               f"{INTERVALO_AUDITORIA_S} s (audit.log).")
+    c1, c2 = st.columns([2, 1])
+    acciones = c1.pills("Tipo de acción", audit.ACCIONES, selection_mode="multi",
                         key="aud_acciones")
+    roles = c2.pills("Rol", [ROL_TECNICO, ROL_CONSULTA, audit.ROL_ANONIMO],
+                     selection_mode="multi", key="aud_roles")
+    texto = st.text_input("🔎 Buscar en el detalle", key="aud_texto",
+                          placeholder="Ej.: ID 42, rules, cuarentena…")
+    st.fragment(_tabla_auditoria, run_every=INTERVALO_AUDITORIA_S)(acciones, roles, texto)
+
+
+def _tabla_auditoria(acciones: list[str], roles: list[str], texto: str) -> None:
     try:
         eventos = audit.leer()
     except OSError as error:
@@ -1361,17 +1642,24 @@ def _registro_auditoria() -> None:
         return
     if acciones:
         eventos = [ev for ev in eventos if ev.accion in acciones]
+    if roles:
+        eventos = [ev for ev in eventos if ev.rol in roles]
+    if buscado := normalizar(texto.strip()):
+        eventos = [ev for ev in eventos if buscado in normalizar(f"{ev.detalle} {ev.accion}")]
     if audit.RUTA_AUDITORIA.exists():
         st.download_button("⬇️ Descargar audit.log", audit.RUTA_AUDITORIA.read_bytes(),
-                           file_name="audit.log", mime="text/plain")
+                           file_name="audit.log", mime="text/plain", key="d_audit",
+                           on_click=_auditar_descarga, args=("audit.log", len(audit.leer())))
     if not eventos:
         st.info("Todavía no hay eventos con este filtro.", icon="🫥")
         return
-    st.caption(f"{len(eventos):,} eventos".replace(",", ".")
+    st.caption(f"{len(eventos):,} eventos · última lectura {datetime.now():%H:%M:%S}"
+               .replace(",", ".")
                + (" · se muestran los 1.000 más recientes" if len(eventos) > 1000 else ""))
     st.dataframe(pd.DataFrame([{"Fecha": ev.fecha, "Rol": ev.rol, "Acción": ev.accion,
                                 "Detalle": ev.detalle} for ev in eventos[:1000]]),
-                 hide_index=True, height=480, key="t_auditoria",
+                 hide_index=True, height=min(480, 35 * (min(len(eventos), 1000) + 1) + 3),
+                 key="t_auditoria",
                  column_config={"Detalle": st.column_config.TextColumn(width="large")})
 
 
@@ -1379,12 +1667,16 @@ def main() -> None:
     st.set_page_config(page_title="Monitor XML Incidencias", page_icon="📊", layout="wide",
                        initial_sidebar_state="collapsed")
     st.markdown(CSS, unsafe_allow_html=True)
-    if not _pantalla_pin():
-        return
+    # ── Gatekeeper: sin rol solo existe la pantalla de PIN; no se carga NADA más
+    if not _rol():
+        _pantalla_pin()
+        st.stop()
+
+    if _tema() == OSCURO:
+        st.markdown(CSS_OSCURO, unsafe_allow_html=True)
     _estado_inicial()
     ss = st.session_state
-
-    _sesion_en_barra()
+    _aviso_pins_de_fabrica()
     _barra_lateral()
     _sincronizar()
     ss.recien_sincronizado = True
@@ -1393,13 +1685,12 @@ def main() -> None:
         st.toast(mensaje, icon=icono)
         ss.toast = None
 
-    st.markdown('<div class="cabecera"><h1>📊 Monitor XML de Incidencias</h1>'
-                f'<span class="insignia">{INSIGNIA_ROL[_rol()]}</span></div>',
-                unsafe_allow_html=True)
-    vivo = ss.fuente == "disco" and ss.get("en_vivo", True)
-    st.fragment(_vigilante, run_every=INTERVALO_S if vivo else None)()
-
     datos: Analizador | None = ss.datos
+    try:                                   # Seguimiento: se relee en cada ejecución
+        ss.gestion, ss.error_gestion = GESTOR.todos(), ""
+    except ErrorGestion as error:
+        ss.gestion, ss.error_gestion = {}, str(error)
+    _cabecera(datos)
     if datos is None:
         if ss.error:
             st.warning(f"**{ss.error.titulo}** — {ss.error.mensaje}\n\n"
@@ -1411,30 +1702,33 @@ def main() -> None:
 
     reglas = cargar_reglas()
     df = _tabla(ss.clave, datos)
-    try:                                   # Seguimiento: se relee en cada ejecución
-        ss.gestion, ss.error_gestion = GESTOR.todos(), ""
-    except ErrorGestion as error:
-        ss.gestion, ss.error_gestion = {}, str(error)
     df = df.assign(Reparación=[
         (g.estado if (g := ss.gestion.get(i)) else ESTADO_GESTION_DEFECTO)
         if estado == VALIDA else None for i, estado in zip(df["ID"], df["Estado"])])
     hueco_kpis = st.container()
     filtrado = _filtros(df)
+    validas_f = [datos.todas[int(p)] for p in filtrado["pos"] if datos.todas[int(p)].valida]
+    ss.mttr = calcular_mttr(validas_f, ss.gestion)
+    ss.alertas_sla = fuera_de_sla(validas_f, ss.gestion)
+    ss.ids_sla = {a.id for a in ss.alertas_sla}
     with hueco_kpis:
-        _kpis(filtrado, len(df))
+        _kpis(filtrado, len(df), ss.mttr, ss.alertas_sla)
 
-    nombres = ["📊 Panel", "📋 Incidencias", "🔍 Cómo se categoriza (Auditoría y Reglas)"]
+    nombres = ["📊 Panel", "📋 Incidencias", "⚡ Incidencias Masivas y Duplicadas",
+               "🔍 Cómo se categoriza (Auditoría y Reglas)"]
     if _puede_editar():
-        nombres.append("📜 Registro de Auditoría")
+        nombres.append("📜 Auditoría de Cambios")
     pestanas = st.tabs(nombres, key="pestana")
-    panel, listado, auditoria = pestanas[:3]
+    panel, listado, masivas, auditoria = pestanas[:4]
     if _puede_editar():
-        with pestanas[3]:
+        with pestanas[4]:
             _registro_auditoria()
     with panel:
         _panel(filtrado, datos)
     with listado:
         _listado(filtrado, datos)
+    with masivas:
+        _masivas(filtrado, datos)
     with auditoria:
         _inspector(filtrado, datos)
         st.divider()

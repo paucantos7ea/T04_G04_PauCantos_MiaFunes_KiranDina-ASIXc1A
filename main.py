@@ -8,6 +8,7 @@ Uso (desde cualquier carpeta y en cualquier sistema operativo):
     python main.py --file ruta/al/archivo.xml
     python ruta/al/proyecto/main.py -f datos.xml
     python main.py --html                   # index.html estático para GitHub Pages
+    python main.py --demo                   # inyecta 1 crítica + 1 anomalía de prueba
     python main.py --web                    # web + túnel público con QR (cualquier red)
     python main.py --web --sin-tunel        # web solo en la red local
     python main.py --web --port 8502 -f datos.xml
@@ -81,6 +82,9 @@ def crear_parser() -> argparse.ArgumentParser:
     parser.add_argument("--salida", metavar="RUTA",
                         help="con --html: dónde escribir el HTML (por defecto, index.html en "
                              "la carpeta del proyecto)")
+    parser.add_argument("--demo", action="store_true",
+                        help="inyecta en el XML 1 incidencia crítica válida y 1 anomalía para "
+                             "ver cómo la web abierta detecta el cambio en ~2 s")
     parser.add_argument("--web", action="store_true",
                         help="abre la interfaz web en tiempo real (Streamlit) en lugar del "
                              "menú de terminal")
@@ -206,7 +210,7 @@ def lanzar_web(args: argparse.Namespace) -> int:
         if ip == "127.0.0.1":
             texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
                          style="yellow")
-        texto.append(f"Acceso por PIN (Consulta / Técnico), leído de {auth.origen()}.\n",
+        texto.append(f"Acceso por PIN (Consultor / Técnico), leído de {auth.origen()}.\n",
                      style="green")
         if pins_de_fabrica:
             texto.append("⚠ Se usan los PINs de fábrica (1234 / 12345): cualquiera que los "
@@ -243,6 +247,7 @@ def lanzar_web(args: argparse.Namespace) -> int:
 def generar_html(args: argparse.Namespace) -> int:
     """`--html`: analiza el XML y escribe index.html. Solo usa la biblioteca
     estándar (no necesita rich ni questionary), así funciona tal cual en GitHub Actions."""
+    from app.auth import ErrorAuth
     from app.html_builder import NOMBRE_HTML, generar_desde_xml
     from app.models import ErrorCarga
     from app.utils import limpiar_ruta
@@ -257,6 +262,10 @@ def generar_html(args: argparse.Namespace) -> int:
     except ErrorCarga as error:
         print(f"ERROR ({error.titulo}): {error.mensaje}", file=sys.stderr)
         return 1
+    except ErrorAuth as error:
+        print(f"ERROR (PINs): {error} No se publica una página sin pantalla de PIN.",
+              file=sys.stderr)
+        return 1
     except OSError as error:
         print(f"ERROR: no se ha podido escribir {destino}: {error}", file=sys.stderr)
         return 1
@@ -265,6 +274,33 @@ def generar_html(args: argparse.Namespace) -> int:
           f"  Fuente: {ruta}\n"
           f"  {r.total} incidencias: {r.validas} válidas, {r.anomalas} bloqueadas\n"
           f"  Ábrelo con doble clic o publícalo en GitHub Pages (ver README).")
+    return 0
+
+
+def inyectar_demo(args: argparse.Namespace) -> int:
+    """`--demo`: añade 1 crítica válida + 1 anomalía al XML. Solo biblioteca estándar."""
+    from app.demo import ErrorDemo, inyectar_demo as inyectar
+
+    ruta, aviso = localizar_xml(args.file)
+    if ruta is None:
+        print(f"ERROR: {aviso}", file=sys.stderr)
+        return 1
+    try:
+        resultado = inyectar(ruta)
+    except ErrorDemo as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"ERROR: no se ha podido escribir {ruta}: {error}", file=sys.stderr)
+        return 1
+    print(f"✔ Inyectadas 2 incidencias de prueba en {ruta}\n"
+          f"  #{resultado.id_valida}  VÁLIDA · Crítica · caída general de la red en la "
+          f"Primera planta (fecha de hoy)\n"
+          f"  #{resultado.id_anomala}  ANOMALÍA · fecha imposible (1668) + texto aleatorio "
+          f"tipo Faker\n"
+          f"  Total en el archivo: {resultado.total} incidencias.\n"
+          f"  Si la web está abierta, mostrará el aviso y los gráficos actualizados en ~2 s.\n"
+          f"  Para deshacerlo (si el XML está en Git): git checkout -- \"{ruta.name}\"")
     return 0
 
 
@@ -303,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
     args = crear_parser().parse_args(argv)
     if args.html:
         return generar_html(args)
+    if args.demo:
+        return inyectar_demo(args)
     if args.web:
         return lanzar_web(args) if dependencias_ok(DEPENDENCIAS_WEB) else 1
     if not dependencias_ok():

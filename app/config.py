@@ -489,3 +489,15 @@ ordinador ordenador equip usuari usuaria intenta intentat sempre algun alguns mo
 
 ESTADOS_GESTION = ["Pendiente", "En curso", "Resuelta"]
 ESTADO_GESTION_DEFECTO = "Pendiente"
+
+# ══════════════════════════════════════════════════════════════════════════
+# Incidencias masivas (tormentas), duplicados y tiempos de resolución (SLA)
+# ══════════════════════════════════════════════════════════════════════════
+
+MIN_TORMENTA = 3                  # Incidencias en la misma planta/oficina y categoría...
+VENTANA_TORMENTA_DIAS = 0         # ...separadas como mucho N días (0 = el mismo día)
+UMBRAL_DUPLICADO = 0.75           # Similitud de texto (difflib.SequenceMatcher) para duplicado
+MARGEN_DUPLICADO_DIAS = 3         # Duplicado solo si las fechas distan como mucho N días
+
+# Horas máximas que una incidencia puede seguir abierta antes de incumplir el SLA
+SLA_HORAS: dict[str, int] = {"Crítica": 4, "Alta": 24}

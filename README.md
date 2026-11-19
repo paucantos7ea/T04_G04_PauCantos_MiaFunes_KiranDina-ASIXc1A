@@ -43,6 +43,7 @@ python3 main.py                              # menú de terminal; busca el XML a
 python3 main.py --file datos/incidencies.xml # ruta relativa al directorio actual
 python3 main.py --web                        # interfaz web + túnel público con QR
 python3 main.py --html                       # index.html estático para GitHub Pages
+python3 main.py --demo                       # inyecta 1 crítica + 1 anomalía de prueba
 python3 main.py --help
 ```
 
@@ -51,6 +52,21 @@ python3 main.py --help
 1. En el directorio desde el que lanzas el comando.
 2. En la carpeta del proyecto (donde está `main.py`).
 3. Si no lo encuentra, te pide la ruta (puedes escribirla, completarla con Tab o arrastrar el archivo a la terminal) y no continúa hasta que el archivo exista.
+
+### Inyector de pruebas en tiempo real (`--demo`)
+
+Con la web abierta, ejecuta en otra terminal:
+
+```bash
+python3 main.py --demo
+```
+
+Añade al final del XML vigilado (el mismo que encontraría `--web`, o el de `--file`) dos incidencias con los siguientes IDs libres:
+
+1. Una **válida y Crítica** con la fecha de hoy: caída general de la red en la *Primera planta*.
+2. Una **anomalía evidente**: fecha imposible (1668) y texto aleatorio tipo Faker.
+
+La consola muestra los dos IDs y en ~2 s la web avisa de las nuevas incidencias y actualiza KPIs y gráficos. La escritura es segura: los nombres de los campos se copian de la última incidencia del archivo, los valores se escapan, el resultado se vuelve a parsear antes de guardarlo y se escribe de forma atómica. **Modifica el XML de verdad**: para deshacerlo, `git checkout -- incidencies.xml`.
 
 ### Menú de terminal
 
@@ -158,12 +174,14 @@ Si no hay ninguna, la web arranca igualmente en la red local y la consola explic
 
 ### Acceso por PIN y registro de auditoría
 
-Al abrir la web se pide un PIN. Hay dos niveles:
+Al abrir la web **lo único que se carga es la pantalla del PIN**: sin sesión no se lee el XML ni se pinta ningún dato, gráfico o menú (`st.stop()`). Hay dos niveles:
 
 | PIN (de fábrica) | Modo | Qué puede hacer |
 |---|---|---|
-| `1234` | 👁️ **Consulta** | Ver todo (gráficos, filtros, radar, reglas, fichas) y descargar `respotes_limpio.xml` y `cuarentena.csv`. **No** puede editar reglas ni reparaciones. |
-| `12345` | 🛠️ **Técnico** | Además, editar `rules.json` (editor y palabras emergentes), cambiar estados y notas de reparación y consultar el **📜 Registro de Auditoría**. |
+| `1234` | 👁️ **Consultor** | Ver todo (gráficos, filtros, radar, masivas, reglas, fichas) y descargar el informe ejecutivo, `respotes_limpio.xml` y `cuarentena.csv`. **No** puede editar reglas ni reparaciones. |
+| `12345` | 🛠️ **Técnico** | Además, editar `rules.json` (editor y palabras emergentes), cambiar estados y notas de reparación y consultar la pestaña **📜 Auditoría de Cambios**. |
+
+En la cabecera se ven siempre el rol activo, el indicador en vivo y el botón **🔑 Cerrar sesión**.
 
 **Dónde se configuran los PINs**, por prioridad:
 
@@ -180,30 +198,67 @@ Cada PIN debe tener de 4 a 12 cifras, y los dos tienen que ser distintos. Tras *
 - Accesos correctos, intentos fallidos y cierres de sesión. El PIN tecleado **no** se guarda, solo su longitud.
 - Cambios de reparación: ID, estado anterior → nuevo y nota.
 - Cambios en `rules.json`: palabras añadidas o quitadas por lista, marcas y años.
-- Descargas de `respotes_limpio.xml`, `cuarentena.csv` y del CSV filtrado.
+- Descargas del informe ejecutivo, `respotes_limpio.xml`, `cuarentena.csv`, el CSV filtrado y el propio `audit.log`.
 
-En Modo Técnico, la pestaña **📜 Registro de Auditoría** lo muestra del más reciente al más antiguo, con filtro por tipo de acción y botón para descargar `audit.log`.
+En Modo Técnico, la pestaña **📜 Auditoría de Cambios** lo muestra del más reciente al más antiguo y **se refresca sola cada 3 s**, con filtros por tipo de acción, rol y texto, y botón para descargar `audit.log`.
 
 ### Qué ofrece
 
+- **Cabecera**: rol activo, indicador en vivo, selector **☀️ Claro / 🌙 Oscuro** (Claro por defecto; cada usuario elige el suyo y los gráficos cambian a `plotly_white` / `plotly_dark`), botón **📄 Descargar Informe Ejecutivo** y cerrar sesión.
 - **En vivo**: comprueba el XML (y `rules.json`) cada 2 s. Al guardar o añadir `<incidencia>`, todo se actualiza solo, sin perder los filtros, y avisa de las incidencias nuevas. Si el XML se está escribiendo a medias, mantiene el último estado válido y reintenta.
-- **📊 Panel**: KPIs, validez vs anomalías, severidad, evolución temporal, top equipos y categorías, **progreso de reparaciones** y **🛰️ radar de puntos calientes**:
+- **📊 Panel**: KPIs (incluido el **MTTR**), **⏰ alerta de tickets Críticos y Altos fuera de SLA**, validez vs anomalías, severidad, evolución temporal, top equipos y categorías, **progreso de reparaciones** y **🛰️ radar de puntos calientes**:
   - Zonas cuyo ritmo reciente (ventana de 30, 60 o 90 días) supera su ritmo histórico (×1,3 = punto caliente).
   - Equipos crónicos o reincidentes por código de inventario (`PC-ADM-016`, `EQ-1234`…).
   - Mapa de calor de zona × mes.
-- **📋 Incidencias**: tabla con ficha explicada al tocar una fila, o **🛠️ tarjetas de reparación** táctiles. En cada tarjeta, el técnico marca *Pendiente / En curso / Resuelta* y deja una nota. Se guarda en **`gestion.json`**; el XML original **nunca** se modifica. Descargas:
+- **📋 Incidencias**: tabla con ficha explicada al tocar una fila, o **🛠️ tarjetas de reparación** táctiles (las que incumplen el SLA llevan **⏰ FUERA DE SLA** en el título). En cada tarjeta, el técnico marca *Pendiente / En curso / Resuelta* y deja una nota. Se guarda en **`gestion.json`**; el XML original **nunca** se modifica. Descargas:
   - **`respotes_limpio.xml`**: misma estructura que el original, solo con las válidas y ya auto-reparadas.
   - **`cuarentena.csv`**: una fila por regla incumplida, con el campo afectado y el motivo exacto.
   - CSV del filtro actual.
+- **⚡ Incidencias Masivas y Duplicadas**: tarjetas con las tormentas activas, los tickets duplicados, las plantas afectadas y los «fallos reales estimados» (contando cada tormenta y cada grupo de duplicados como un solo fallo). Debajo, el desglose por **planta / oficina**, fecha, categoría, síntoma principal y número de incidencias, con un desplegable con los IDs afectados. Ver [Incidencias masivas, duplicados y SLA](#incidencias-masivas-duplicados-y-sla).
 - **Filtros táctiles**: búsqueda (`#42` = ID exacto), estado, severidad, **estado de reparación**, tipo de anomalía, categoría, marca y fechas.
 - **🔍 Auditoría y Reglas**:
   - Inspector paso a paso de cada incidencia (reparaciones, validación, categoría, marca y regla exacta de severidad).
   - **🧪 Problemas emergentes**: palabras y bigramas frecuentes en las incidencias sin clasificar bien. Se añaden a `rules.json` con un clic.
   - **✏️ Editor de reglas**: palabras clave, marcas y rango de años, con botón para restaurar los valores de fábrica.
   - Mapa de todas las reglas.
-- **Menú lateral** (☰): modo activo y «Cerrar sesión / Cambiar PIN», subir otro XML a mano, pausar el modo en vivo y ver la URL de la red local.
+- **Menú lateral** (☰): subir otro XML a mano, pausar el modo en vivo y ver la URL de la red local.
 
 También se puede lanzar directamente con Streamlit: `streamlit run web.py --server.address 0.0.0.0 -- --file ruta/al/respotes.xml`.
+
+### Incidencias masivas, duplicados y SLA
+
+Los umbrales están en `app/config.py` y los de detección se pueden ajustar en la propia pestaña (⚙️ *Ajustar la detección*):
+
+| Concepto | Regla | Ajuste |
+|---|---|---|
+| **Tormenta** | ≥ 3 incidencias válidas de la misma **categoría** en la misma **planta u oficina** el mismo día (o encadenadas a ≤ N días). Síntoma principal = paso del motor que decidió la severidad más repetido. | `MIN_TORMENTA`, `VENTANA_TORMENTA_DIAS` |
+| **Duplicado** | Mismo equipo (código de inventario o, si falta, equipo + zona), fechas a ≤ 3 días y descripción con `difflib.SequenceMatcher` ≥ 0,75. Se encadenan: si A≈B y B≈C, es un solo grupo; el más antiguo es el original. | `UMBRAL_DUPLICADO`, `MARGEN_DUPLICADO_DIAS` |
+| **SLA** | Crítica abierta más de 4 h o Alta más de 24 h sin estar *Resuelta*, contando desde la «Marca de temps» del formulario. | `SLA_HORAS` |
+
+**Tiempos de resolución en `gestion.json`.** Cada ID guarda, además de `estado` y `nota`:
+
+```json
+"42": {"estado": "Resuelta", "nota": "Cambiado el cable",
+       "fecha_inicio": "2026-11-19T09:00:00",
+       "fecha_resolucion": "2026-11-19T10:40:00",
+       "duracion_minutos": 100.0, "historial": [ ... ]}
+```
+
+- `fecha_inicio` se fija la **primera** vez que pasa a *En curso* y ya no cambia.
+- Al pasar a *Resuelta* se fijan `fecha_resolucion` y `duracion_minutos`. Si se resuelve sin haber pasado por *En curso*, no hay duración medible y no cuenta para el MTTR.
+- Reabrirla borra la resolución; editar solo la nota de una resuelta no toca sus tiempos.
+
+El **MTTR** (tiempo medio de resolución) se calcula global y por severidad y aparece en el panel y en el informe.
+
+### Informe ejecutivo (`informe_estado.html`)
+
+El botón **📄 Descargar Informe Ejecutivo** (Consultor y Técnico) genera un HTML autocontenido, sin JavaScript, listo para imprimir o para *Imprimir → Guardar como PDF*. Incluye:
+
+- Fecha y hora de emisión y un resumen ejecutivo en lenguaje claro.
+- KPIs: total procesadas, % válidas, % basura bloqueada y MTTR.
+- Ranking de plantas y oficinas, tormentas y duplicados, desglose por severidad con su SLA y los tickets fuera de SLA.
+
+Cada descarga queda en `audit.log`.
 
 ### Alternativa permanente: Streamlit Community Cloud
 
@@ -243,7 +298,9 @@ Qué incluye:
 
 El workflow instala las dependencias, ejecuta los tests, regenera `index.html` y lo publica. Si un test falla, no se publica nada y se conserva la versión anterior.
 
-> El dashboard estático **no lleva PIN**: es de solo lectura (no edita nada) y cualquier PIN incrustado en un HTML público se podría leer en el código fuente.
+**Pantalla de PIN.** `index.html` se abre bloqueado y pide el PIN de Consultor o de Técnico; tras entrar se ven el rol y un botón «Cerrar sesión». El rol se recuerda solo mientras la pestaña está abierta. Los PINs salen de `pins.json` o de `PIN_CONSULTA` / `PIN_TECNICO`. En GitHub Actions, créalos como secretos en *Settings → Secrets and variables → Actions*; sin ellos se usan los de fábrica. En el HTML **no** va ningún PIN, solo su SHA-256 con una sal aleatoria.
+
+> ⚠️ **Es una barrera de cortesía, no seguridad real.** Un sitio estático no puede esconder sus propios datos: las incidencias van dentro de la página, y quien abra el código fuente las ve sin PIN. Además, un PIN de 4-5 cifras se prueba entero contra la huella en segundos. Para datos confidenciales usa la web con servidor (`python3 main.py --web`), donde el PIN sí se comprueba en el servidor.
 >
 > ⚠️ **Una web de GitHub Pages es pública**: cualquiera con la URL puede ver las incidencias (descripciones, zonas, códigos de equipo…), aunque el repositorio sea privado. No subas datos personales.
 
@@ -261,14 +318,17 @@ Cubren:
 - Fechas imposibles, etiquetas vacías, desbordamiento, binario y amárico.
 - Generación y relectura de `respotes_limpio.xml` y `cuarentena.csv`.
 - `rules.json`, `gestion.json`, radar, minería de palabras y túnel (con un `cloudflared` simulado).
-- Dashboard estático: HTML autocontenido y seguro frente a contenido malicioso del XML y, si hay Chromium o Chrome instalado, **paridad exacta** entre el motor JavaScript del navegador y el de Python en todas las incidencias.
+- PIN: Consultor (`1234`) y Técnico (`12345`), variables de entorno, configuración inválida, freno de fuerza bruta y escritura en `audit.log`.
+- Web Streamlit de extremo a extremo (AppTest): al abrir solo se ve el PIN, PIN incorrecto auditado, permisos de cada rol, tema oscuro y cierre de sesión.
+- Tormentas por planta/oficina, duplicados (incluidas cadenas A≈B≈C), marcas de tiempo de `gestion.json`, MTTR, SLA, `informe_estado.html` e inyección de `main.py --demo`.
+- Dashboard estático: pantalla de PIN (sin PINs en claro, SHA-256 en JS idéntico al de Python) y HTML autocontenido y seguro frente a contenido malicioso del XML y, si hay Chromium o Chrome instalado, **paridad exacta** entre el motor JavaScript del navegador y el de Python en todas las incidencias.
 
 Los tests no tocan los archivos reales: trabajan en carpetas temporales.
 
 ## Estructura
 
 ```
-main.py              Punto de entrada CLI (argparse + bucle protegido, --web con túnel, --html)
+main.py              Punto de entrada CLI (argparse + bucle protegido, --web con túnel, --html, --demo)
 web.py               Interfaz web Streamlit + Plotly (solo presentación)
 rules.json           Reglas editables (se genera solo si no existe)
 gestion.json         Seguimiento de reparaciones (se crea al guardar el primer estado)
@@ -281,14 +341,16 @@ app/
   utils.py           Utilidades de texto, rutas y fechas
   parser.py          Carga y validación de estructura del XML
   validator.py       Auto-reparación, anomalías, coherencia técnica, marca y severidad
-  analytics.py       Métricas, filtros, radar de zonas/equipos y minería de palabras
-  exporter.py        JSON de válidas, respotes_limpio.xml y cuarentena.csv
-  gestion.py         Estados de reparación en gestion.json
+  analytics.py       Métricas, radar, minería, tormentas, duplicados, MTTR y SLA
+  exporter.py        JSON de válidas, respotes_limpio.xml, cuarentena.csv e informe_estado.html
+  gestion.py         Estados de reparación y marcas de tiempo en gestion.json
+  demo.py            Inyector de pruebas de main.py --demo
   auth.py            PINs (pins.json / variables de entorno), roles y freno de fuerza bruta
   audit.py           Registro de auditoría en audit.log
   tunel.py           Túnel público (cloudflared / ngrok / localtunnel) y QR en ASCII
   html_builder.py    Generador del dashboard estático index.html (GitHub Pages)
-  estatico/          Plantilla, CSS y JavaScript del dashboard (motor.js = motor en el navegador)
+  estatico/          Plantilla, CSS y JavaScript del dashboard (motor.js = motor en el navegador,
+                     acceso.js = pantalla de PIN)
   ui/                Menú de terminal (Rich + questionary)
 tests/               Tests de pytest
 .github/workflows/   pages.yml: regenera y publica index.html en GitHub Pages en cada push
