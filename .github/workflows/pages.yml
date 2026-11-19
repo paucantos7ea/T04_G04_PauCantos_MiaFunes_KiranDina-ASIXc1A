@@ -1,0 +1,75 @@
+# Regenera el dashboard estático (index.html) y lo publica en GitHub Pages
+# cada vez que se sube a main/master un cambio en el XML, las reglas o el código.
+#
+# Requisito único: en GitHub → Settings → Pages → Build and deployment →
+# Source: «GitHub Actions» (ver README, sección «Dashboard público en GitHub Pages»).
+
+name: Publicar dashboard en GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "respotes.xml"
+      - "incidencies.xml"
+      - "rules.json"
+      - "main.py"
+      - "app/**"
+      - "tests/**"
+      - "requirements.txt"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:            # Botón «Run workflow» para publicar a mano
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Una sola publicación a la vez; si llegan varios push seguidos, gana el último
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Ejecutar los tests (motor Python y paridad con el motor JavaScript)
+        run: python3 -m pytest -q
+
+      - name: Generar index.html con los datos del XML
+        run: python3 main.py --html
+
+      - name: Preparar la carpeta publicada (solo el dashboard)
+        run: |
+          mkdir -p _site
+          cp index.html _site/index.html
+          touch _site/.nojekyll
+
+      - name: Subir el sitio
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.despliegue.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: despliegue
+        uses: actions/deploy-pages@v4

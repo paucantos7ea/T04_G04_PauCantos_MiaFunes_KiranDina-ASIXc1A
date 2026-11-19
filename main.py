@@ -7,6 +7,7 @@ Uso (desde cualquier carpeta y en cualquier sistema operativo):
     python main.py                          # busca respotes.xml / incidencies.xml
     python main.py --file ruta/al/archivo.xml
     python ruta/al/proyecto/main.py -f datos.xml
+    python main.py --html                   # index.html estático para GitHub Pages
     python main.py --web                    # web + túnel público con QR (cualquier red)
     python main.py --web --sin-tunel        # web solo en la red local
     python main.py --web --port 8502 -f datos.xml
@@ -75,6 +76,11 @@ def crear_parser() -> argparse.ArgumentParser:
                "actual y en la carpeta del proyecto.")
     parser.add_argument("-f", "--file", metavar="RUTA",
                         help="ruta al archivo XML (relativa al directorio actual o absoluta)")
+    parser.add_argument("--html", action="store_true",
+                        help="genera index.html, el dashboard estático para GitHub Pages")
+    parser.add_argument("--salida", metavar="RUTA",
+                        help="con --html: dónde escribir el HTML (por defecto, index.html en "
+                             "la carpeta del proyecto)")
     parser.add_argument("--web", action="store_true",
                         help="abre la interfaz web en tiempo real (Streamlit) en lugar del "
                              "menú de terminal")
@@ -230,6 +236,34 @@ def lanzar_web(args: argparse.Namespace) -> int:
                 servidor.kill()
 
 
+def generar_html(args: argparse.Namespace) -> int:
+    """`--html`: analiza el XML y escribe index.html. Solo usa la biblioteca
+    estándar (no necesita rich ni questionary), así funciona tal cual en GitHub Actions."""
+    from app.html_builder import NOMBRE_HTML, generar_desde_xml
+    from app.models import ErrorCarga
+    from app.utils import limpiar_ruta
+
+    ruta, aviso = localizar_xml(args.file)
+    if ruta is None:
+        print(f"ERROR: {aviso}", file=sys.stderr)
+        return 1
+    destino = limpiar_ruta(args.salida) if args.salida else RAIZ_PROYECTO / NOMBRE_HTML
+    try:
+        salida, datos = generar_desde_xml(ruta, destino)
+    except ErrorCarga as error:
+        print(f"ERROR ({error.titulo}): {error.mensaje}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"ERROR: no se ha podido escribir {destino}: {error}", file=sys.stderr)
+        return 1
+    r = datos.resumen
+    print(f"✔ {salida} generado ({salida.stat().st_size / 1_048_576:.1f} MB)\n"
+          f"  Fuente: {ruta}\n"
+          f"  {r.total} incidencias: {r.validas} válidas, {r.anomalas} bloqueadas\n"
+          f"  Ábrelo con doble clic o publícalo en GitHub Pages (ver README).")
+    return 0
+
+
 def localizar_xml(argumento: str | None) -> tuple[Path | None, str | None]:
     """Devuelve (ruta encontrada, aviso). Si la ruta es None, hay que pedirla."""
     from app.config import NOMBRES_XML_DEFECTO
@@ -263,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
     """Bucle principal protegido: ninguna excepción llega al usuario como traceback."""
     forzar_utf8()
     args = crear_parser().parse_args(argv)
+    if args.html:
+        return generar_html(args)
     if args.web:
         return lanzar_web(args) if dependencias_ok(DEPENDENCIAS_WEB) else 1
     if not dependencias_ok():

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="Dashboard de incidencias informáticas: validez, severidad, evolución y auditoría de cada registro.">
+<title>Monitor de incidencias</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233e63dd'/%3E%3Cpath d='M8 22V12m6 10V8m6 14v-6m6 6V11' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<header class="cabecera">
+  <div class="cabecera-fila">
+    <div>
+      <h1>Monitor de incidencias</h1>
+      <p class="sello" id="sello">{{SELLO}}</p>
+    </div>
+    <div class="cabecera-acciones">
+      <label class="boton boton-discreto" for="xml-local" title="Analiza otro XML en este navegador, sin subirlo a ningún sitio">
+        Cargar otro XML local
+      </label>
+      <input type="file" id="xml-local" accept=".xml,text/xml,application/xml" hidden>
+    </div>
+  </div>
+  <div class="aviso-origen" id="aviso-origen" hidden></div>
+  <nav class="pestanas" role="tablist" aria-label="Secciones">
+    <button role="tab" aria-selected="true" data-pestana="panel">Panel</button>
+    <button role="tab" aria-selected="false" data-pestana="registros">Incidencias</button>
+    <button role="tab" aria-selected="false" data-pestana="reglas">Reglas activas</button>
+  </nav>
+</header>
+
+<main>
+  <section class="filtros" id="filtros" aria-label="Filtros">
+    <input type="search" id="f-texto" placeholder="Buscar por ID (#42) o texto…" autocomplete="off" aria-label="Buscar">
+    <select id="f-estado" aria-label="Estado">
+      <option value="">Todas</option><option value="validas">Válidas</option><option value="bloqueadas">Bloqueadas</option>
+    </select>
+    <select id="f-sev" aria-label="Severidad"><option value="">Toda severidad</option></select>
+    <select id="f-cat" aria-label="Categoría"><option value="">Toda categoría</option></select>
+    <select id="f-marca" aria-label="Marca"><option value="">Toda marca</option></select>
+    <select id="f-anom" aria-label="Tipo de anomalía"><option value="">Todo tipo de anomalía</option></select>
+    <button class="boton boton-discreto" id="f-limpiar" type="button">Limpiar</button>
+  </section>
+
+  <section class="kpis" id="kpis" aria-label="Indicadores"></section>
+
+  <section class="vista" id="vista-panel">
+    <div class="rejilla-graficos">
+      <article class="tarjeta"><h2>Validez vs. anomalías</h2><p class="nota">Las bloqueadas se agrupan por la primera regla que las rechazó.</p><div class="lienzo"><canvas id="g-donut"></canvas></div></article>
+      <article class="tarjeta"><h2>Distribución por severidad</h2><p class="nota">Solo incidencias válidas.</p><div class="lienzo"><canvas id="g-sev"></canvas></div></article>
+      <article class="tarjeta ancha"><h2>Evolución temporal</h2><p class="nota">Incidencias válidas por mes de la incidencia, apiladas por severidad.</p><div class="lienzo alto"><canvas id="g-tiempo"></canvas></div></article>
+      <article class="tarjeta ancha">
+        <div class="titulo-con-control">
+          <h2>Top con más averías</h2>
+          <div class="segmentado" id="g-top-por" role="group" aria-label="Agrupar por">
+            <button data-por="equipo" aria-pressed="true">Equipo</button>
+            <button data-por="zona" aria-pressed="false">Zona</button>
+            <button data-por="cat" aria-pressed="false">Categoría</button>
+            <button data-por="marca" aria-pressed="false">Marca</button>
+          </div>
+        </div>
+        <div class="lienzo alto"><canvas id="g-top"></canvas></div>
+      </article>
+    </div>
+    <p class="nota sin-graficos" id="sin-graficos" hidden>No se ha podido cargar Chart.js (¿sin conexión?): los gráficos no están disponibles, el resto de la página sí.</p>
+  </section>
+
+  <section class="vista" id="vista-registros" hidden>
+    <div class="barra-lista"><p id="contador" class="nota"></p></div>
+    <div id="lista"></div>
+    <nav class="paginacion" id="paginacion" aria-label="Paginación"></nav>
+  </section>
+
+  <section class="vista" id="vista-reglas" hidden></section>
+</main>
+
+<footer class="pie">Generado con <code>python3 main.py --html</code> a partir del XML del repositorio. Toca cualquier incidencia para ver por qué se clasificó así.</footer>
+
+<dialog id="modal" aria-labelledby="modal-titulo">
+  <div class="modal-cabecera">
+    <h2 id="modal-titulo"></h2>
+    <button class="cerrar" id="modal-cerrar" type="button" aria-label="Cerrar">✕</button>
+  </div>
+  <div id="modal-cuerpo"></div>
+</dialog>
+
+<script type="application/json" id="datos">{{DATOS}}</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+<script>
+{{MOTOR}}
+</script>
+<script>
+{{APP}}
+</script>
+</body>
+</html>

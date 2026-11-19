@@ -42,6 +42,7 @@ python3 -m pip install -r requirements.txt
 python3 main.py                              # menú de terminal; busca el XML automáticamente
 python3 main.py --file datos/incidencies.xml # ruta relativa al directorio actual
 python3 main.py --web                        # interfaz web + túnel público con QR
+python3 main.py --html                       # index.html estático para GitHub Pages
 python3 main.py --help
 ```
 
@@ -63,6 +64,7 @@ python3 main.py --help
 | Filtrar por fechas | Año/mes presentes en los datos o rango `AAAA-MM-DD` |
 | Buscar por texto o ID | ID exacto abre la ficha; si no, busca el texto en todos los campos |
 | Guardar en JSON | Crea o actualiza `incidencies.json` junto al XML (sobrescribir o añadir sin duplicar) |
+| Regenerar index.html | Escribe el dashboard estático para GitHub Pages con los datos cargados |
 
 Controles de las tablas: `[N]` siguiente · `[P]` anterior · `[G]` ir a una página · `[I]` ficha detallada por ID · `[Q]` volver. `Ctrl+C` cierra el programa limpiamente en cualquier momento.
 
@@ -195,6 +197,29 @@ Para tener la web siempre disponible sin el PC encendido:
 
 **Si el móvil no conecta en la red local**: comprueba que está en la misma Wi-Fi y permite el puerto 8501 en el cortafuegos del PC (Windows lo pregunta la primera vez).
 
+## Dashboard público en GitHub Pages (sin PC encendido)
+
+GitHub Pages solo sirve archivos estáticos: no ejecuta Python. Por eso `python3 main.py --html` analiza el XML con el mismo motor que el resto del programa y escribe un **`index.html` autocontenido**: datos, estilos y código van dentro del propio archivo, y solo Chart.js se carga desde un CDN. Se abre con doble clic o desde cualquier móvil.
+
+Qué incluye:
+
+- **KPIs**: procesadas, válidas y bloqueadas (%), y el recuento por severidad.
+- **Gráficos táctiles**: validez vs. anomalías, evolución mensual, severidad y top de equipos, zonas, categorías o marcas.
+- **Filtros instantáneos** y **lista paginada** (15 por página, con salto a una página): tarjetas en el móvil y tabla en el escritorio.
+- **Ficha «¿por qué se clasificó así?»**: al tocar cualquier incidencia se ven sus campos originales y la regla exacta que decidió.
+- **Pestaña de reglas activas.**
+- **Botón «Cargar otro XML local»**: analiza otro archivo en el propio navegador con las mismas reglas, sin subirlo a ningún sitio.
+
+**Activarlo (una sola vez):**
+
+1. Sube el proyecto a GitHub con la carpeta `.github/workflows/` incluida (`git add .`, `git commit`, `git push`).
+2. En el repositorio: **Settings → Pages → Build and deployment → Source: «GitHub Actions»**.
+3. Ve a la pestaña **Actions**: el workflow *Publicar dashboard en GitHub Pages* se ejecuta solo con cada `git push` que cambie el XML, `rules.json` o el código (o pulsa *Run workflow*). Al terminar (1-2 min), la URL pública aparece en el resumen del workflow y en *Settings → Pages*: `https://<usuario>.github.io/<repositorio>/`.
+
+El workflow instala las dependencias, ejecuta los tests, regenera `index.html` y lo publica. Si un test falla, no se publica nada y se conserva la versión anterior.
+
+> ⚠️ **Una web de GitHub Pages es pública**: cualquiera con la URL puede ver las incidencias (descripciones, zonas, códigos de equipo…), aunque el repositorio sea privado. No subas datos personales.
+
 ## Tests
 
 ```bash
@@ -209,13 +234,14 @@ Cubren:
 - Fechas imposibles, etiquetas vacías, desbordamiento, binario y amárico.
 - Generación y relectura de `respotes_limpio.xml` y `cuarentena.csv`.
 - `rules.json`, `gestion.json`, radar, minería de palabras y túnel (con un `cloudflared` simulado).
+- Dashboard estático: HTML autocontenido y seguro frente a contenido malicioso del XML y, si hay Chromium o Chrome instalado, **paridad exacta** entre el motor JavaScript del navegador y el de Python en todas las incidencias.
 
 Los tests no tocan los archivos reales: trabajan en carpetas temporales.
 
 ## Estructura
 
 ```
-main.py              Punto de entrada CLI (argparse + bucle protegido, --web con túnel)
+main.py              Punto de entrada CLI (argparse + bucle protegido, --web con túnel, --html)
 web.py               Interfaz web Streamlit + Plotly (solo presentación)
 rules.json           Reglas editables (se genera solo si no existe)
 gestion.json         Seguimiento de reparaciones (se crea al guardar el primer estado)
@@ -232,8 +258,12 @@ app/
   exporter.py        JSON de válidas, respotes_limpio.xml y cuarentena.csv
   gestion.py         Estados de reparación en gestion.json
   tunel.py           Túnel público (cloudflared / ngrok / localtunnel) y QR en ASCII
+  html_builder.py    Generador del dashboard estático index.html (GitHub Pages)
+  estatico/          Plantilla, CSS y JavaScript del dashboard (motor.js = motor en el navegador)
   ui/                Menú de terminal (Rich + questionary)
 tests/               Tests de pytest
+.github/workflows/   pages.yml: regenera y publica index.html en GitHub Pages en cada push
+index.html           Dashboard generado (no se versiona: lo crea el workflow)
 legacy/              Versión monolítica anterior (solo referencia)
 ```
 

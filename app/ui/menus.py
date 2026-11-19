@@ -168,6 +168,7 @@ class App:
     OP_FECHAS = "▣  Filtrar por fechas"
     OP_BUSCAR = "⌕  Buscar por texto o ID"
     OP_JSON = "⇩  Guardar incidencias válidas en JSON"
+    OP_HTML = "◎  Regenerar index.html (dashboard para GitHub Pages)"
     OP_SALIR = "×  Salir"
 
     def __init__(self, consola: Console, entrada: Entrada | None = None):
@@ -216,6 +217,7 @@ class App:
             self.OP_FECHAS: self.ver_fechas,
             self.OP_BUSCAR: self.buscar,
             self.OP_JSON: self.guardar_json,
+            self.OP_HTML: self.generar_html,
         }
         while True:
             self.consola.clear()
@@ -424,6 +426,30 @@ class App:
                                self._extra_ficha())
 
     # ── Exportación a JSON ─────────────────────────────────────────────────
+
+    def generar_html(self) -> None:
+        """Escribe index.html con los datos ya cargados (los mismos que se ven aquí)."""
+        from app.html_builder import escribir_index      # Importación tardía: solo si se usa
+
+        self.consola.clear()
+        try:
+            with self.consola.status(f"[{NEON_CIAN}]Generando index.html...[/]", spinner="dots"):
+                ruta = escribir_index(self.datos)
+        except OSError as error:
+            self.consola.print(panel_error("No se ha podido escribir index.html",
+                                           f"{type(error).__name__}: {error}"))
+        else:
+            r = self.datos.resumen
+            self.consola.print(Panel(
+                Text.assemble(("Archivo: ", "dim"), (str(ruta), "bold"),
+                              ("\nTamaño: ", "dim"), (f"{ruta.stat().st_size / 1_048_576:.1f} MB", "bold"),
+                              ("\nIncidencias: ", "dim"),
+                              (f"{r.total} ({r.validas} válidas, {r.anomalas} bloqueadas)", "bold"),
+                              ("\n\nÁbrelo con doble clic o haz git push para publicarlo en "
+                               "GitHub Pages (ver README).", "dim")),
+                title=f"[bold {NEON_VERDE}]✔ Dashboard generado[/]",
+                border_style=NEON_VERDE, box=box.ROUNDED))
+        self.entrada.pausa()
 
     def guardar_json(self) -> None:
         """Exporta las válidas a incidencies.json, en la misma carpeta que el XML.
