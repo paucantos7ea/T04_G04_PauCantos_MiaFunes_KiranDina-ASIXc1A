@@ -9,6 +9,7 @@
   Motor.configurar(D.config);
 
   const POR_PAGINA = 15;
+  const POR_PAGINA_ANOM = 10;
   const NIVELES = D.config.niveles;
   const VAR = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const COLOR_NIVEL = { "Crítica": "--critica", "Alta": "--alta", "Media": "--media", "Leve": "--leve" };
@@ -56,6 +57,7 @@
 
   const ST = {
     publicados: preparar(expandir(D)), todos: null, filtrados: [], pagina: 1,
+    anomFiltradas: [], anomPagina: 1,
     topPor: "equipo", graficos: {}, origen: null, sla: [], idsSla: new Set(), soloSla: false,
     verTodas: false, rol: null, reglas: D.config.reglas, seg: Tecnico.seguimiento(), mttr: null,
     xmlLocal: null, reglasLocales: false,
@@ -69,12 +71,13 @@
   const SLA = D.config.sla || {}, MAS = D.config.masivas || { minTormenta: 3, ventana: 0, umbral: 0.75, margen: 3 };
   ST.todos = ST.publicados;
 
-  // ── Referencias a los 5 acordeones ─────────────────────────────────────
+  // ── Referencias a los 6 acordeones ─────────────────────────────────────
   const ACC = {
     validez: $("#acc-validez"),
     evolucion: $("#acc-evolucion"),
     masivas: $("#acc-masivas"),
     explorador: $("#acc-explorador"),
+    anomalias: $("#acc-anomalias"),
     reglas: $("#acc-reglas"),
   };
   const TODOS_ACC = Object.values(ACC);
@@ -229,7 +232,13 @@
     bExp.textContent = hayFiltroActivo() ? `${num(n)} / ${num(ST.todos.length)} filtradas` : `${num(n)} incidencias`;
     bExp.className = "acordeon-badge" + (hayFiltroActivo() ? " acento" : "");
 
-    // 5. Reglas y Auditoría
+    // 5. Anomalías Bloqueadas
+    const totalAnom = ST.todos.filter((r) => !r.valida).length;
+    const bAnom = $("#badge-anomalias");
+    bAnom.textContent = `${num(totalAnom)} ${totalAnom === 1 ? "anomalía" : "anomalías"}`;
+    bAnom.className = "acordeon-badge " + (totalAnom ? "alerta" : "ok");
+
+    // 6. Reglas y Auditoría
     const bReg = $("#badge-reglas");
     if (esTecnico()) {
       const nEv = Tecnico.eventos().length;
@@ -432,7 +441,7 @@
 
   // ── Lista paginada: tarjetas (< 768 px) o tabla ────────────────────────
   const escritorio = window.matchMedia("(min-width: 768px)");
-  escritorio.addEventListener("change", () => lista());
+  escritorio.addEventListener("change", () => { lista(); renderAnomalias(); });
 
   function etiquetaResultado(r) {
     return r.valida
@@ -512,6 +521,155 @@
     e.preventDefault();
     const n = parseInt(e.target.querySelector("input").value, 10);
     if (Number.isFinite(n)) { ST.pagina = n; lista(); }
+  });
+
+  // ── Apartado dedicado: 🚫 Anomalías Bloqueadas ─────────────────────────
+  const RE_CAMPO_FECHA = new RegExp(D.config.re.RE_CAMPO_FECHA.s, D.config.re.RE_CAMPO_FECHA.f);
+  const RE_CAMPO_DESC = new RegExp(D.config.re.RE_CAMPO_DESCRIPCION.s, D.config.re.RE_CAMPO_DESCRIPCION.f);
+  const FA_ANOM = { texto: $("#anom-texto"), motivo: $("#anom-motivo") };
+
+  function valorOriginalCampo(r, patron, respaldo = "") {
+    const reparado = r.rep.find((x) => patron.test(x.campo));
+    if (reparado) return reparado.antes;
+    const campo = r.campos.find(([n]) => patron.test(n));
+    if (campo) return campo[1] === null ? "" : campo[1];
+    return respaldo || "";
+  }
+
+  function fechaXmlAnomalia(r) {
+    const raw = valorOriginalCampo(r, RE_CAMPO_FECHA, r.fecha ? dmy(r.fecha) : "");
+    return raw ? raw : "∅ vacío";
+  }
+
+  function descOriginalAnomalia(r) {
+    const raw = valorOriginalCampo(r, RE_CAMPO_DESC, r.desc);
+    return raw ? raw : "∅ vacío";
+  }
+
+  function opcionesAnomalias() {
+    const bloq = ST.todos.filter((r) => !r.valida);
+    const pares = contar(
+      bloq.flatMap((r) => [...new Set(r.anom.map((a) => `${a.tipo} · ${a.regla}`))].map((m) => ({ m }))),
+      (x) => x.m
+    );
+    rellenarSelect(FA_ANOM.motivo, pares, "Todos los motivos / reglas");
+  }
+
+  function filtrarAnomalias() {
+    const q = Motor.normalizar(FA_ANOM.texto.value);
+    const motivo = FA_ANOM.motivo.value;
+    const bloq = ST.todos.filter((r) => !r.valida);
+    ST.anomFiltradas = bloq.filter((r) => {
+      if (q) {
+        if (q.startsWith("#")) { if (Motor.normalizar(r.id) !== q.slice(1).trim()) return false; }
+        else {
+          const orig = Motor.normalizar(`${r.id} ${descOriginalAnomalia(r)} ${fechaXmlAnomalia(r)} ${r.anom.map((a) => `${a.tipo} ${a.regla} ${a.motivo}`).join(" ")}`);
+          if (!orig.includes(q)) return false;
+        }
+      }
+      if (motivo && !r.anom.some((a) => `${a.tipo} · ${a.regla}` === motivo)) return false;
+      return true;
+    });
+    ST.anomPagina = 1;
+    renderAnomalias();
+  }
+
+  function badgeMotivoAnomalia(r) {
+    const a = r.anom[0];
+    const col = COLOR_ANOM[a.tipo] || "--error";
+    const extra = r.anom.length > 1 ? ` (+${r.anom.length - 1} más)` : "";
+    return `<span class="insignia-anom" style="--color:var(${col})"><strong>⛔ ${esc(a.tipo)}</strong><small>${esc(a.regla)}${extra}</small></span>`;
+  }
+
+  function renderAnomalias() {
+    const f = ST.anomFiltradas, total = f.length;
+    const paginas = Math.max(1, Math.ceil(total / POR_PAGINA_ANOM));
+    ST.anomPagina = Math.min(Math.max(1, ST.anomPagina), paginas);
+    const inicio = (ST.anomPagina - 1) * POR_PAGINA_ANOM;
+    const trozo = f.slice(inicio, inicio + POR_PAGINA_ANOM);
+    const desde = total ? inicio + 1 : 0, hasta = inicio + trozo.length;
+    $("#anom-contador").textContent = total
+      ? `Mostrando ${num(desde)}–${num(hasta)} de ${num(total)} anomalías`
+      : "Mostrando 0 de 0 anomalías";
+
+    const cont = $("#anom-lista");
+    if (!trozo.length) {
+      cont.innerHTML = `<p class="vacio">No hay anomalías bloqueadas con estos filtros.</p>`;
+    } else if (escritorio.matches) {
+      cont.innerHTML = `<div class="tabla-envoltorio"><table class="registros"><thead><tr>
+        <th>ID</th><th>Motivo / Regla</th><th>Fecha XML</th><th>Descripción original</th><th>Auditoría</th></tr></thead><tbody>` +
+        trozo.map((r) => `<tr data-i="${ST.todos.indexOf(r)}" tabindex="0">
+          <td><strong>#${esc(r.id)}</strong></td>
+          <td>${badgeMotivoAnomalia(r)}</td>
+          <td class="anom-fecha">${esc(Motor.truncar(fechaXmlAnomalia(r), 24))}</td>
+          <td class="desc">${esc(Motor.truncar(descOriginalAnomalia(r), 130))}</td>
+          <td><button type="button" class="boton btn-auditar" data-ver="${ST.todos.indexOf(r)}">🔍 Ver por qué</button></td></tr>`).join("") +
+        `</tbody></table></div>`;
+    } else {
+      cont.innerHTML = `<div class="tarjetas">` + trozo.map((r) => `
+        <div class="registro" role="button" tabindex="0" data-i="${ST.todos.indexOf(r)}" style="--color:${colorDe(r)}">
+          <span class="linea"><span class="id">#${esc(r.id)}</span>${badgeMotivoAnomalia(r)}</span>
+          <span class="desc">${esc(Motor.truncar(descOriginalAnomalia(r), 160))}</span>
+          <div class="anom-card-pie">
+            <span class="anom-fecha">📅 ${esc(Motor.truncar(fechaXmlAnomalia(r), 24))}</span>
+            <button type="button" class="boton btn-auditar" data-ver="${ST.todos.indexOf(r)}">🔍 Ver por qué</button>
+          </div>
+        </div>`).join("") + `</div>`;
+    }
+
+    $("#anom-paginacion").innerHTML = paginas <= 1 ? "" : `
+      <button class="boton" data-anom-ir="${ST.anomPagina - 1}" ${ST.anomPagina <= 1 ? "disabled" : ""}>« Anterior</button>
+      <span class="estado">Página ${ST.anomPagina} de ${paginas}</span>
+      <button class="boton" data-anom-ir="${ST.anomPagina + 1}" ${ST.anomPagina >= paginas ? "disabled" : ""}>Siguiente »</button>
+      <form id="anom-ir-a" class="paginacion-salto"><label>Ir a pág: <input type="number" min="1" max="${paginas}" inputmode="numeric" value="${ST.anomPagina}" aria-label="Ir a página de anomalías"> de ${paginas}</label>
+      <button class="boton" type="submit">Ir</button></form>`;
+  }
+
+  function cuarentenaCsvTexto(anomalas) {
+    const celda = (v) => {
+      const s = String(v ?? "");
+      return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const filas = [["id", "tipo_anomalia", "campo_afectado", "regla", "motivo", "valor_detectado", "auto_reparada"]];
+    for (const r of anomalas) {
+      for (const a of r.anom) {
+        filas.push([r.id, a.tipo, a.campo, a.regla, a.motivo,
+          String(a.valor ?? "").split(/\s+/).filter(Boolean).join(" ").slice(0, 500),
+          r.rep.length ? "sí" : "no"]);
+      }
+    }
+    return "\ufeff" + filas.map((f) => f.map(celda).join(",")).join("\r\n") + "\r\n";
+  }
+
+  let esperaAnom;
+  FA_ANOM.texto.addEventListener("input", () => { clearTimeout(esperaAnom); esperaAnom = setTimeout(filtrarAnomalias, 150); });
+  FA_ANOM.motivo.addEventListener("change", filtrarAnomalias);
+  $("#anom-limpiar").addEventListener("click", () => { FA_ANOM.texto.value = ""; FA_ANOM.motivo.value = ""; filtrarAnomalias(); });
+  $("#descargar-cuarentena").addEventListener("click", () => {
+    const objetivo = ST.anomFiltradas;
+    Tecnico.descargar("cuarentena.csv", cuarentenaCsvTexto(objetivo), "text/csv");
+    auditar("EXPORTACION", `Descarga de cuarentena.csv (${objetivo.length} anomalías)`);
+    if (esTecnico()) { auditoria(); actualizarBadges(); }
+  });
+  $("#anom-lista").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-ver]");
+    if (btn) { e.stopPropagation(); abrir(ST.todos[+btn.dataset.ver]); return; }
+    const el = e.target.closest("[data-i]");
+    if (el) abrir(ST.todos[+el.dataset.i]);
+  });
+  $("#anom-lista").addEventListener("keydown", (e) => {
+    if (e.target.closest("button")) return;
+    const el = e.target.closest("[data-i]");
+    if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); abrir(ST.todos[+el.dataset.i]); }
+  });
+  $("#anom-paginacion").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-anom-ir]");
+    if (b && !b.disabled) { ST.anomPagina = +b.dataset.anomIr; renderAnomalias(); ACC.anomalias.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  });
+  $("#anom-paginacion").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const n = parseInt(e.target.querySelector("input").value, 10);
+    if (Number.isFinite(n)) { ST.anomPagina = n; renderAnomalias(); }
   });
 
   // ── Modal: ¿por qué se clasificó así? ──────────────────────────────────
@@ -1052,7 +1210,7 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     actualizarBadges();
     if (modal.open) modal.close();
   }
-  function reiniciar() { opciones(); reglas(); filtrar(); }
+  function reiniciar() { opciones(); opcionesAnomalias(); reglas(); filtrar(); filtrarAnomalias(); }
   reiniciar();
   const guardadas = Tecnico.leerLS(CLAVE_REGLAS, null);
   if (guardadas) {
@@ -1061,6 +1219,6 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     if (distintas) aplicarReglas(guardadas, { auditarCambio: false }).catch(() => Tecnico.guardarLS(CLAVE_REGLAS, null));
     else Tecnico.guardarLS(CLAVE_REGLAS, null);
   }
-  window.Dashboard = { ST, abrir, filtrar, ponerRol, aplicarReglas, informeHtml, redimensionarGraficos };
+  window.Dashboard = { ST, abrir, filtrar, ponerRol, aplicarReglas, informeHtml, redimensionarGraficos, cuarentenaCsvTexto };
   document.documentElement.dataset.listo = "1";
 })();

@@ -70,6 +70,7 @@ try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentEl
         <option value="acc-evolucion">📈 Evolución Temporal y Top Equipos</option>
         <option value="acc-masivas">⚡ Incidencias Masivas y Duplicadas</option>
         <option value="acc-explorador">📋 Explorador de Incidencias y Filtros</option>
+        <option value="acc-anomalias">🚫 Anomalías Bloqueadas</option>
         <option value="acc-reglas">🛡️ Reglas de Clasificación y Auditoría</option>
       </select>
     </div>
@@ -211,7 +212,34 @@ try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentEl
       </div>
     </details>
 
-    <!-- 5. Reglas de Clasificación y Auditoría -->
+    <!-- 5. Anomalías Bloqueadas -->
+    <details class="acordeon" id="acc-anomalias" data-seccion="anomalias">
+      <summary class="acordeon-cabecera">
+        <span class="acordeon-titulo">
+          <span class="acordeon-icono" aria-hidden="true">🚫</span>
+          <span>Anomalías Bloqueadas</span>
+        </span>
+        <span class="acordeon-meta">
+          <span class="acordeon-badge alerta" id="badge-anomalias"></span>
+          <span class="acordeon-flecha" aria-hidden="true">▾</span>
+        </span>
+      </summary>
+      <div class="acordeon-cuerpo" id="vista-anomalias">
+        <section class="filtros-anomalias" aria-label="Filtros de anomalías bloqueadas">
+          <input type="search" id="anom-texto" placeholder="Buscar por ID (#42) o texto de la descripción original…" autocomplete="off" aria-label="Buscar anomalías">
+          <select id="anom-motivo" aria-label="Motivo o regla de bloqueo">
+            <option value="">Todos los motivos / reglas</option>
+          </select>
+          <button class="boton boton-discreto" id="anom-limpiar" type="button">Limpiar</button>
+          <button class="boton boton-discreto" id="descargar-cuarentena" type="button" title="Descargar las anomalías bloqueadas en formato CSV (UTF-8)">⬇️ Descargar cuarentena.csv</button>
+        </section>
+        <div class="barra-lista"><p id="anom-contador" class="nota"></p></div>
+        <div id="anom-lista"></div>
+        <nav class="paginacion" id="anom-paginacion" aria-label="Paginación de anomalías"></nav>
+      </div>
+    </details>
+
+    <!-- 6. Reglas de Clasificación y Auditoría -->
     <details class="acordeon" id="acc-reglas" data-seccion="reglas">
       <summary class="acordeon-cabecera">
         <span class="acordeon-titulo">

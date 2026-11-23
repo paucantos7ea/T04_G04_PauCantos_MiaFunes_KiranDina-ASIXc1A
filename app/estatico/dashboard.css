@@ -342,6 +342,38 @@ main { padding: 18px 16px 32px; max-width: 1280px; margin: 0 auto; }
   .filtros input, .filtros select { font-size: .86rem; }
 }
 
+/* ── Anomalías bloqueadas (filtros, tabla y tarjetas) ───────────────── */
+.filtros-anomalias {
+  display: grid; grid-template-columns: 1fr; gap: .5rem; margin-bottom: .85rem; align-items: center;
+}
+.filtros-anomalias input, .filtros-anomalias select {
+  width: 100%; min-height: 42px; padding: .48rem .7rem; border-radius: var(--radio-sm);
+  border: 1px solid var(--borde); background: var(--superficie-2); color: var(--texto);
+  font: inherit; font-size: 16px; transition: border-color var(--trans);
+}
+.filtros-anomalias input:hover, .filtros-anomalias select:hover { border-color: var(--borde-fuerte); }
+@media (min-width: 768px) {
+  .filtros-anomalias { grid-template-columns: 2fr 1.5fr auto auto; }
+  .filtros-anomalias input, .filtros-anomalias select { font-size: .86rem; }
+}
+.insignia-anom {
+  display: inline-flex; flex-direction: column; align-items: flex-start; gap: .12rem;
+  padding: .24rem .58rem; border-radius: 9px; font-size: .75rem; line-height: 1.25;
+  background: color-mix(in srgb, var(--color, var(--error)) 14%, var(--superficie));
+  border: 1px solid color-mix(in srgb, var(--color, var(--error)) 48%, transparent);
+  color: var(--texto);
+}
+.insignia-anom strong { color: var(--color, var(--error)); font-weight: 700; }
+.insignia-anom small { color: var(--texto-suave); font-size: .72rem; }
+.anom-fecha { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--texto-suave); font-size: .83rem; }
+.btn-auditar {
+  min-height: 34px; padding: .28rem .68rem; font-size: .8rem; font-weight: 600;
+  border-color: color-mix(in srgb, var(--error) 35%, var(--borde));
+}
+.btn-auditar:hover { border-color: var(--error); color: var(--error); }
+.paginacion-salto { display: inline-flex; align-items: center; gap: .4rem; font-size: .84rem; color: var(--texto-suave); }
+.anom-card-pie { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: .55rem; padding-top: .5rem; border-top: 1px dashed var(--borde); flex-wrap: wrap; }
+
 /* ── Lista: tarjetas en móvil, tabla en escritorio ──────────────────── */
 .barra-lista { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .4rem; }
 .tarjetas { display: grid; gap: .65rem; }

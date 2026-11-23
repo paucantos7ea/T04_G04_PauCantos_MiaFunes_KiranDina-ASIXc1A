@@ -87,10 +87,11 @@ def test_html_autocontenido(casos, reglas):
     assert "Actualizado: 19/11/2026 10:30" in html
     assert "21 registros procesados" in html
     assert 'name="viewport"' in html
-    # Estructura en 5 acordeones + navegación rápida + controles de expansión
-    for id_acc in ("acc-validez", "acc-evolucion", "acc-masivas", "acc-explorador", "acc-reglas"):
+    # Estructura en 6 acordeones + navegación rápida + controles de expansión
+    for id_acc in ("acc-validez", "acc-evolucion", "acc-masivas", "acc-explorador", "acc-anomalias", "acc-reglas"):
         assert f'id="{id_acc}"' in html
     assert 'id="salto-seccion"' in html
+    assert 'id="descargar-cuarentena"' in html
     assert 'id="btn-expandir-todo"' in html and 'id="btn-contraer-todo"' in html
     # Sin recursos locales: solo Chart.js por CDN (GitHub Pages sin rutas rotas)
     externos = re.findall(r'(?:src|href)="([^"#]+)"', html)
@@ -468,11 +469,17 @@ ARNES_ACORDEONES = r"""
     document.getElementById("btn-contraer-todo").click();
     r.trasContraer = accs.filter((a) => a.open).length;
     const salto = document.getElementById("salto-seccion");
-    salto.value = "acc-masivas";
+    salto.value = "acc-anomalias";
     salto.dispatchEvent(new Event("change", { bubbles: true }));
-    r.saltoAbrioMasivas = document.getElementById("acc-masivas").open;
+    r.saltoAbrioAnomalias = document.getElementById("acc-anomalias").open;
     r.kpis = document.querySelectorAll("#kpis .kpi").length;
     r.badgeMasivas = document.getElementById("badge-masivas").textContent;
+    r.badgeAnomalias = document.getElementById("badge-anomalias").textContent;
+    r.anomContador = document.getElementById("anom-contador").textContent;
+    r.anomFilas = document.querySelectorAll("#anom-lista tbody tr, #anom-lista .registro").length;
+    r.anomCsvCabecera = window.Dashboard.cuarentenaCsvTexto(window.Dashboard.ST.anomFiltradas).split("\r\n")[0];
+    document.querySelector("#anom-lista button[data-ver]").click();
+    r.modalAbierto = document.getElementById("modal").open;
   } catch (e) { r.error = String(e && e.stack || e); }
   const pre = document.createElement("pre"); pre.id = "resultado-acc";
   pre.textContent = JSON.stringify(r); document.body.append(pre);
@@ -496,10 +503,15 @@ def test_acordeones_y_navegacion_en_el_navegador(casos, reglas, tmp_path):
     import html as html_mod
     r = json.loads(html_mod.unescape(m.group(1)))
     assert "error" not in r, r.get("error")
-    assert r["total"] == 5
+    assert r["total"] == 6
     assert r["inicialAbiertos"] == 0
-    assert r["trasExpandir"] == 5
+    assert r["trasExpandir"] == 6
     assert r["trasContraer"] == 0
-    assert r["saltoAbrioMasivas"] is True
+    assert r["saltoAbrioAnomalias"] is True
     assert r["kpis"] == 6
     assert r["badgeMasivas"]
+    assert "anomalías" in r["badgeAnomalias"]
+    assert "Mostrando 1–10 de" in r["anomContador"]
+    assert r["anomFilas"] == 10
+    assert r["anomCsvCabecera"] == "\ufeffid,tipo_anomalia,campo_afectado,regla,motivo,valor_detectado,auto_reparada"
+    assert r["modalAbierto"] is True
