@@ -5,15 +5,13 @@
     PIN de técnico  -> rol «Técnico»  (lectura y edición: reglas y reparaciones)
 
 Origen de los PINs, por prioridad:
-    1. Variables de entorno PIN_CONSULTA y PIN_TECNICO (servidores, Streamlit Cloud).
+    1. Variables de entorno PIN_CONSULTA y PIN_TECNICO (GitHub Actions / CI).
     2. pins.json en la raíz del proyecto (se crea con los valores por defecto si falta).
 
 Seguridad:
     * Comparación en tiempo constante (hmac.compare_digest).
     * Freno de fuerza bruta: tras MAX_FALLOS intentos fallidos en VENTANA_FALLOS
-      segundos se rechaza cualquier PIN durante BLOQUEO_S segundos (global para
-      el proceso: abrir otra pestaña no lo salta). Un PIN de 4 cifras sin este
-      freno se adivina en minutos si la web está expuesta con el túnel público.
+      segundos se rechaza cualquier PIN durante BLOQUEO_S segundos.
     * pins.json está en .gitignore: el repositorio es público.
 """
 

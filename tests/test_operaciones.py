@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -234,8 +235,9 @@ def test_inyectar_demo_rechaza_xml_roto(tmp_path):
 def test_main_demo(tmp_path):
     xml = tmp_path / "incidencies.xml"
     shutil.copy(escribir_xml(tmp_path / "base.xml", [inc("1"), inc("2")]), xml)
-    proceso = subprocess.run(["python3", str(RAIZ / "main.py"), "--demo", "--file", str(xml)],
-                             capture_output=True, text=True, timeout=120)
+    proceso = subprocess.run([sys.executable, str(RAIZ / "main.py"), "--demo", "--file", str(xml)],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                             encoding="utf-8", timeout=120)
     assert proceso.returncode == 0, proceso.stderr
     assert "#3" in proceso.stdout and "#4" in proceso.stdout
     assert len(ET.parse(xml).getroot()) == 4

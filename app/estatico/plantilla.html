@@ -8,7 +8,7 @@
 // Tema antes de pintar nada (sin parpadeo): Claro por defecto, el elegido se recuerda
 try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentElement.dataset.tema = "oscuro"; } catch (_) {}
 </script>
-<meta name="description" content="Dashboard de incidencias informáticas: validez, severidad, evolución y auditoría de cada registro.">
+<meta name="description" content="Dashboard de incidencias informáticas: validez, severidad, evolución, masivas, SLA y auditoría.">
 <title>Monitor de incidencias</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233e63dd'/%3E%3Cpath d='M8 22V12m6 10V8m6 14v-6m6 6V11' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
@@ -20,7 +20,7 @@ try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentEl
   <form class="acceso-caja" id="acceso-form" autocomplete="off">
     <div class="acceso-icono" aria-hidden="true">🔒</div>
     <h1 id="acceso-titulo">Monitor de incidencias</h1>
-    <p>Introduce tu PIN para ver el panel.<br><small><b>Consultor</b> o <b>Técnico</b></small></p>
+    <p>Introduce tu PIN para acceder al panel.<br><small><b>👁️ Consultor</b> o <b>🛠️ Técnico</b></small></p>
     <input id="acceso-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="12" placeholder="••••" aria-label="PIN" required autofocus>
     <button class="boton boton-primario" type="submit">Entrar</button>
     <p class="acceso-error" id="acceso-error" role="alert" hidden></p>
@@ -29,101 +29,214 @@ try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentEl
 <noscript><p class="acceso-noscript">Esta página necesita JavaScript para pedir el PIN.</p></noscript>
 
 <header class="cabecera" inert>
-  <div class="cabecera-fila">
-    <div>
+  <div class="cabecera-interior">
+    <div class="cabecera-marca">
       <h1>Monitor de incidencias</h1>
       <p class="sello" id="sello">{{SELLO}}</p>
     </div>
     <div class="cabecera-acciones">
-      <div class="selector-tema" id="selector-tema" role="group" aria-label="Tema">
+      <div class="selector-tema" id="selector-tema" role="group" aria-label="Selector de tema">
         <button type="button" data-tema="claro" aria-pressed="true">☀️ Claro</button>
         <button type="button" data-tema="oscuro" aria-pressed="false">🌙 Oscuro</button>
       </div>
-      <button class="boton boton-primario" id="descargar-informe" type="button" title="Informe HTML listo para imprimir o guardar como PDF">📄 Descargar Informe Ejecutivo</button>
+      <button class="boton boton-primario" id="descargar-informe" type="button" title="Descargar informe HTML ejecutivo listo para imprimir o guardar como PDF">📄 Informe Ejecutivo</button>
+      <label class="boton boton-discreto" for="xml-local" title="Analiza otro archivo XML en este navegador, sin subirlo a ningún sitio">📂 XML local</label>
+      <input type="file" id="xml-local" accept=".xml,text/xml,application/xml" hidden>
       <span class="sesion" id="sesion" hidden>
         <span class="insignia-rol" id="rol-activo"></span>
         <button class="boton boton-discreto" id="cerrar-sesion" type="button">Cerrar sesión</button>
       </span>
-      <label class="boton boton-discreto" for="xml-local" title="Analiza otro XML en este navegador, sin subirlo a ningún sitio">
-        Cargar otro XML local
-      </label>
-      <input type="file" id="xml-local" accept=".xml,text/xml,application/xml" hidden>
     </div>
   </div>
-  <div class="aviso-origen" id="aviso-origen" hidden></div>
-  <nav class="pestanas" role="tablist" aria-label="Secciones">
-    <button role="tab" aria-selected="true" data-pestana="panel">Panel</button>
-    <button role="tab" aria-selected="false" data-pestana="registros">Incidencias</button>
-    <button role="tab" aria-selected="false" data-pestana="masivas">⚡ Masivas y duplicadas</button>
-    <button role="tab" aria-selected="false" data-pestana="reglas">Reglas</button>
-    <button role="tab" aria-selected="false" data-pestana="auditoria" id="pestana-auditoria" hidden>📜 Auditoría</button>
-  </nav>
+  <div class="cabecera-interior">
+    <div class="aviso-origen" id="aviso-origen" hidden></div>
+  </div>
 </header>
 
 <main inert>
-  <section class="filtros" id="filtros" aria-label="Filtros">
-    <input type="search" id="f-texto" placeholder="Buscar por ID (#42) o texto…" autocomplete="off" aria-label="Buscar">
-    <select id="f-estado" aria-label="Estado">
-      <option value="">Todas</option><option value="validas">Válidas</option><option value="bloqueadas">Bloqueadas</option>
-    </select>
-    <select id="f-sev" aria-label="Severidad"><option value="">Toda severidad</option></select>
-    <select id="f-cat" aria-label="Categoría"><option value="">Toda categoría</option></select>
-    <select id="f-marca" aria-label="Marca"><option value="">Toda marca</option></select>
-    <select id="f-anom" aria-label="Tipo de anomalía"><option value="">Todo tipo de anomalía</option></select>
-    <select id="f-rep" aria-label="Reparación"><option value="">Toda reparación</option></select>
-    <button class="boton boton-discreto" id="f-limpiar" type="button">Limpiar</button>
-  </section>
+  <!-- Resumen KPI ejecutivo siempre visible -->
+  <section class="kpis" id="kpis" aria-label="Indicadores ejecutivos"></section>
 
-  <section class="kpis" id="kpis" aria-label="Indicadores"></section>
+  <!-- Alerta compacta de SLA -->
+  <div id="alerta-sla"></div>
 
-  <section class="vista" id="vista-panel">
-    <div id="alerta-sla"></div>
-    <div class="rejilla-graficos">
-      <article class="tarjeta"><h2>Validez vs. anomalías</h2><p class="nota">Las bloqueadas se agrupan por la primera regla que las rechazó.</p><div class="lienzo"><canvas id="g-donut"></canvas></div></article>
-      <article class="tarjeta"><h2>Distribución por severidad</h2><p class="nota">Solo incidencias válidas.</p><div class="lienzo"><canvas id="g-sev"></canvas></div></article>
-      <article class="tarjeta ancha"><h2>Evolución temporal</h2><p class="nota">Incidencias válidas por mes de la incidencia, apiladas por severidad.</p><div class="lienzo alto"><canvas id="g-tiempo"></canvas></div></article>
-      <article class="tarjeta ancha">
-        <div class="titulo-con-control">
-          <h2>Top con más averías</h2>
-          <div class="segmentado" id="g-top-por" role="group" aria-label="Agrupar por">
-            <button data-por="equipo" aria-pressed="true">Equipo</button>
-            <button data-por="zona" aria-pressed="false">Zona</button>
-            <button data-por="cat" aria-pressed="false">Categoría</button>
-            <button data-por="marca" aria-pressed="false">Marca</button>
-          </div>
-        </div>
-        <div class="lienzo alto"><canvas id="g-top"></canvas></div>
-      </article>
+  <!-- Barra de navegación rápida sobre los acordeones -->
+  <section class="barra-navegacion" aria-label="Navegación rápida de secciones">
+    <div class="salto-grupo">
+      <label class="salto-etiqueta" for="salto-seccion">Ir a sección:</label>
+      <select id="salto-seccion" aria-label="Ir a una sección del panel">
+        <option value="">🧭 Seleccionar sección…</option>
+        <option value="acc-validez">📊 Gráficos de Validez y Severidad</option>
+        <option value="acc-evolucion">📈 Evolución Temporal y Top Equipos</option>
+        <option value="acc-masivas">⚡ Incidencias Masivas y Duplicadas</option>
+        <option value="acc-explorador">📋 Explorador de Incidencias y Filtros</option>
+        <option value="acc-reglas">🛡️ Reglas de Clasificación y Auditoría</option>
+      </select>
     </div>
-    <p class="nota sin-graficos" id="sin-graficos" hidden>No se ha podido cargar Chart.js (¿sin conexión?): los gráficos no están disponibles, el resto de la página sí.</p>
+    <div class="controles-acordeon">
+      <span class="filtro-activo-chip" id="chip-filtro-activo" hidden></span>
+      <button class="boton boton-discreto boton-sm" id="btn-expandir-todo" type="button">Expandir todo</button>
+      <button class="boton boton-discreto boton-sm" id="btn-contraer-todo" type="button">Contraer todo</button>
+    </div>
   </section>
 
-  <section class="vista" id="vista-registros" hidden>
-    <div class="barra-lista"><p id="contador" class="nota"></p></div>
-    <div id="lista"></div>
-    <nav class="paginacion" id="paginacion" aria-label="Paginación"></nav>
-  </section>
+  <!-- 5 Secciones desplegables (acordeones) -->
+  <div class="acordeones" id="acordeones">
 
-  <section class="vista" id="vista-masivas" hidden>
-    <h2 class="seccion-titulo">⚡ Incidencias masivas y duplicadas</h2>
-    <p class="nota" id="masivas-nota"></p>
-    <section class="kpis" id="masivas-kpis" aria-label="Resumen de masivas"></section>
-    <article class="tarjeta ancha" id="masivas-grafico"><h2>Incidencias en tormentas por planta / oficina</h2><div class="lienzo"><canvas id="g-tormentas"></canvas></div></article>
-    <h2 class="seccion-titulo" id="titulo-tormentas">Tormentas de incidencias</h2>
-    <div class="grupos" id="lista-tormentas"></div>
-    <h2 class="seccion-titulo" id="titulo-duplicados">Tickets duplicados</h2>
-    <div class="grupos" id="lista-duplicados"></div>
-  </section>
+    <!-- 1. Gráficos de Validez y Severidad -->
+    <details class="acordeon" id="acc-validez" data-seccion="validez">
+      <summary class="acordeon-cabecera">
+        <span class="acordeon-titulo">
+          <span class="acordeon-icono" aria-hidden="true">📊</span>
+          <span>Gráficos de Validez y Severidad</span>
+        </span>
+        <span class="acordeon-meta">
+          <span class="acordeon-badge" id="badge-validez"></span>
+          <span class="acordeon-flecha" aria-hidden="true">▾</span>
+        </span>
+      </summary>
+      <div class="acordeon-cuerpo">
+        <div class="rejilla-graficos">
+          <article class="tarjeta">
+            <h2>Validez vs. anomalías</h2>
+            <p class="nota">Las bloqueadas se agrupan por la primera regla que las rechazó.</p>
+            <div class="lienzo"><canvas id="g-donut"></canvas></div>
+          </article>
+          <article class="tarjeta">
+            <h2>Distribución por severidad</h2>
+            <p class="nota">Solo incidencias válidas.</p>
+            <div class="lienzo"><canvas id="g-sev"></canvas></div>
+          </article>
+        </div>
+        <p class="nota sin-graficos" id="sin-graficos" hidden>No se ha podido cargar Chart.js (¿sin conexión?): los gráficos no están disponibles, el resto de la página sí.</p>
+      </div>
+    </details>
 
-  <section class="vista" id="vista-reglas" hidden>
-    <div id="editor-reglas"></div>
-    <div id="mapa-reglas"></div>
-  </section>
+    <!-- 2. Evolución Temporal y Top Equipos -->
+    <details class="acordeon" id="acc-evolucion" data-seccion="evolucion">
+      <summary class="acordeon-cabecera">
+        <span class="acordeon-titulo">
+          <span class="acordeon-icono" aria-hidden="true">📈</span>
+          <span>Evolución Temporal y Top Equipos</span>
+        </span>
+        <span class="acordeon-meta">
+          <span class="acordeon-badge" id="badge-evolucion"></span>
+          <span class="acordeon-flecha" aria-hidden="true">▾</span>
+        </span>
+      </summary>
+      <div class="acordeon-cuerpo">
+        <div class="rejilla-graficos">
+          <article class="tarjeta ancha">
+            <h2>Evolución temporal</h2>
+            <p class="nota">Incidencias válidas por mes de la incidencia, apiladas por severidad.</p>
+            <div class="lienzo alto"><canvas id="g-tiempo"></canvas></div>
+          </article>
+          <article class="tarjeta ancha">
+            <div class="titulo-con-control">
+              <h2>Top equipos y categorías con más averías</h2>
+              <div class="segmentado" id="g-top-por" role="group" aria-label="Agrupar por">
+                <button type="button" data-por="equipo" aria-pressed="true">Equipo</button>
+                <button type="button" data-por="zona" aria-pressed="false">Zona</button>
+                <button type="button" data-por="cat" aria-pressed="false">Categoría</button>
+                <button type="button" data-por="marca" aria-pressed="false">Marca</button>
+              </div>
+            </div>
+            <div class="lienzo alto"><canvas id="g-top"></canvas></div>
+          </article>
+        </div>
+      </div>
+    </details>
 
-  <section class="vista" id="vista-auditoria" hidden></section>
+    <!-- 3. Incidencias Masivas y Duplicadas -->
+    <details class="acordeon" id="acc-masivas" data-seccion="masivas">
+      <summary class="acordeon-cabecera">
+        <span class="acordeon-titulo">
+          <span class="acordeon-icono" aria-hidden="true">⚡</span>
+          <span>Incidencias Masivas y Duplicadas</span>
+        </span>
+        <span class="acordeon-meta">
+          <span class="acordeon-badge" id="badge-masivas"></span>
+          <span class="acordeon-flecha" aria-hidden="true">▾</span>
+        </span>
+      </summary>
+      <div class="acordeon-cuerpo" id="vista-masivas">
+        <p class="nota" id="masivas-nota"></p>
+        <section class="kpis kpis-masivas" id="masivas-kpis" aria-label="Resumen de masivas"></section>
+        <article class="tarjeta ancha" id="masivas-grafico">
+          <h2>Incidencias en tormentas por planta / oficina</h2>
+          <div class="lienzo"><canvas id="g-tormentas"></canvas></div>
+        </article>
+        <h2 class="seccion-titulo" id="titulo-tormentas">Tormentas de incidencias</h2>
+        <div class="grupos" id="lista-tormentas"></div>
+        <h2 class="seccion-titulo" id="titulo-duplicados">Tickets duplicados</h2>
+        <div class="grupos" id="lista-duplicados"></div>
+      </div>
+    </details>
+
+    <!-- 4. Explorador de Incidencias y Filtros -->
+    <details class="acordeon" id="acc-explorador" data-seccion="explorador">
+      <summary class="acordeon-cabecera">
+        <span class="acordeon-titulo">
+          <span class="acordeon-icono" aria-hidden="true">📋</span>
+          <span>Explorador de Incidencias y Filtros</span>
+        </span>
+        <span class="acordeon-meta">
+          <span class="acordeon-badge" id="badge-explorador"></span>
+          <span class="acordeon-flecha" aria-hidden="true">▾</span>
+        </span>
+      </summary>
+      <div class="acordeon-cuerpo" id="vista-registros">
+        <div class="filtros-rapidos" id="filtros-rapidos" role="group" aria-label="Filtros rápidos">
+          <button type="button" class="pildora" data-rapido="todas" aria-pressed="true">Todas</button>
+          <button type="button" class="pildora" data-rapido="validas" aria-pressed="false">✔ Válidas</button>
+          <button type="button" class="pildora" data-rapido="bloqueadas" aria-pressed="false">⛔ Anomalías</button>
+          <button type="button" class="pildora" data-rapido="criticas" aria-pressed="false">🔴 Críticas</button>
+          <button type="button" class="pildora" data-rapido="sla" aria-pressed="false">⏰ Fuera de SLA</button>
+        </div>
+        <section class="filtros" id="filtros" aria-label="Filtros detallados">
+          <input type="search" id="f-texto" placeholder="Buscar por ID (#42) o texto…" autocomplete="off" aria-label="Buscar">
+          <select id="f-estado" aria-label="Estado">
+            <option value="">Todas</option><option value="validas">Válidas</option><option value="bloqueadas">Bloqueadas</option>
+          </select>
+          <select id="f-sev" aria-label="Severidad"><option value="">Toda severidad</option></select>
+          <select id="f-cat" aria-label="Categoría"><option value="">Toda categoría</option></select>
+          <select id="f-marca" aria-label="Marca"><option value="">Toda marca</option></select>
+          <select id="f-anom" aria-label="Tipo de anomalía"><option value="">Todo tipo de anomalía</option></select>
+          <select id="f-rep" aria-label="Reparación"><option value="">Toda reparación</option></select>
+          <button class="boton boton-discreto" id="f-limpiar" type="button">Limpiar</button>
+        </section>
+        <div class="barra-lista"><p id="contador" class="nota"></p></div>
+        <div id="lista"></div>
+        <nav class="paginacion" id="paginacion" aria-label="Paginación"></nav>
+      </div>
+    </details>
+
+    <!-- 5. Reglas de Clasificación y Auditoría -->
+    <details class="acordeon" id="acc-reglas" data-seccion="reglas">
+      <summary class="acordeon-cabecera">
+        <span class="acordeon-titulo">
+          <span class="acordeon-icono" aria-hidden="true">🛡️</span>
+          <span>Reglas de Clasificación y Auditoría</span>
+        </span>
+        <span class="acordeon-meta">
+          <span class="acordeon-badge" id="badge-reglas"></span>
+          <span class="acordeon-flecha" aria-hidden="true">▾</span>
+        </span>
+      </summary>
+      <div class="acordeon-cuerpo" id="vista-reglas">
+        <div id="editor-reglas"></div>
+        <div id="mapa-reglas"></div>
+        <div id="pestana-auditoria" class="subbloque-auditoria" hidden>
+          <hr class="separador-seccion">
+          <div id="vista-auditoria"></div>
+        </div>
+      </div>
+    </details>
+
+  </div>
 </main>
 
-<footer class="pie" inert>Generado con <code>python3 main.py --html</code> a partir del XML del repositorio. Toca cualquier incidencia para ver por qué se clasificó así.</footer>
+<footer class="pie" inert>Generado con <code>python3 main.py --html</code> para GitHub Pages. Toca cualquier incidencia para ver su trazabilidad completa.</footer>
 
 <dialog id="modal" aria-labelledby="modal-titulo">
   <div class="modal-cabecera">

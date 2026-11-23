@@ -27,7 +27,6 @@ Técnico (pins.json o PIN_CONSULTA / PIN_TECNICO). En el HTML NO van los PINs,
 solo su SHA-256 con una sal aleatoria. Aun así es una barrera de cortesía, no
 seguridad real: un sitio estático no puede ocultar sus propios datos (van
 embebidos en la página) y un PIN de 4-5 cifras se prueba entero en segundos.
-Para datos confidenciales hay que usar la web con servidor (main.py --web).
 """
 
 from __future__ import annotations

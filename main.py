@@ -4,18 +4,11 @@
 
 Uso (desde cualquier carpeta y en cualquier sistema operativo):
 
-    python main.py                          # busca respotes.xml / incidencies.xml
-    python main.py --file ruta/al/archivo.xml
-    python ruta/al/proyecto/main.py -f datos.xml
-    python main.py --html                   # index.html estático para GitHub Pages
-    python main.py --demo                   # inyecta 1 crítica + 1 anomalía de prueba
-    python main.py --web                    # web + túnel público con QR (cualquier red)
-    python main.py --web --sin-tunel        # web solo en la red local
-    python main.py --web --port 8502 -f datos.xml
-
-La interfaz web también se puede lanzar directamente con Streamlit:
-
-    streamlit run web.py --server.address 0.0.0.0
+    python3 main.py                          # menú interactivo de terminal
+    python3 main.py --file ruta/al/archivo.xml
+    python3 main.py --html                   # genera index.html estático para GitHub Pages
+    python3 main.py --html --salida web.html # genera el dashboard en una ruta concreta
+    python3 main.py --demo                   # inyecta 1 crítica + 1 anomalía de prueba
 
 Búsqueda automática del XML si no se pasa --file:
     1. Directorio actual desde el que se lanza el comando (Path.cwd()).
@@ -28,9 +21,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import os
-import socket
-import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -43,8 +33,6 @@ if str(RAIZ_PROYECTO) not in sys.path:
     sys.path.insert(0, str(RAIZ_PROYECTO))
 
 DEPENDENCIAS = ("rich", "questionary")
-DEPENDENCIAS_WEB = ("rich", "streamlit", "plotly")
-PUERTO_WEB = 8501
 
 
 def forzar_utf8() -> None:
@@ -72,176 +60,19 @@ def dependencias_ok(modulos: tuple[str, ...] = DEPENDENCIAS) -> bool:
 def crear_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Escáner y analizador interactivo de incidencias en XML.",
+        description="Escáner y analizador interactivo de incidencias en XML (CLI + GitHub Pages).",
         epilog="Sin --file se busca respotes.xml o incidencies.xml en el directorio "
                "actual y en la carpeta del proyecto.")
     parser.add_argument("-f", "--file", metavar="RUTA",
                         help="ruta al archivo XML (relativa al directorio actual o absoluta)")
     parser.add_argument("--html", action="store_true",
-                        help="genera index.html, el dashboard estático para GitHub Pages")
+                        help="genera index.html, el dashboard estático oficial para GitHub Pages")
     parser.add_argument("--salida", metavar="RUTA",
                         help="con --html: dónde escribir el HTML (por defecto, index.html en "
                              "la carpeta del proyecto)")
     parser.add_argument("--demo", action="store_true",
-                        help="inyecta en el XML 1 incidencia crítica válida y 1 anomalía para "
-                             "ver cómo la web abierta detecta el cambio en ~2 s")
-    parser.add_argument("--web", action="store_true",
-                        help="abre la interfaz web en tiempo real (Streamlit) en lugar del "
-                             "menú de terminal")
-    parser.add_argument("--port", type=int, default=PUERTO_WEB, metavar="N",
-                        help=f"puerto de la interfaz web (por defecto {PUERTO_WEB})")
-    parser.add_argument("--tunel", default="auto",
-                        choices=["auto", "cloudflared", "ngrok", "localtunnel"],
-                        help="con --web: herramienta de túnel público (por defecto, la primera "
-                             "disponible)")
-    parser.add_argument("--sin-tunel", action="store_true",
-                        help="con --web: solo red local, sin URL pública")
+                        help="inyecta en el XML 1 incidencia crítica válida y 1 anomalía de prueba")
     return parser
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Interfaz web (--web)
-# ══════════════════════════════════════════════════════════════════════════
-
-def ip_local() -> str:
-    """IP de esta máquina en la red local (la que usará el móvil).
-
-    Conectar un socket UDP no envía ningún paquete: solo pide al sistema qué
-    interfaz usaría para salir, y de ella se lee la IP.
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("10.255.255.255", 1))
-            ip = sock.getsockname()[0]
-            if not ip.startswith("127."):
-                return ip
-    except OSError:
-        pass
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-        if not ip.startswith("127."):
-            return ip
-    except OSError:
-        pass
-    return "127.0.0.1"
-
-
-def puerto_libre(desde: int, intentos: int = 20) -> int:
-    """Primer puerto libre a partir de `desde` (por si 8501 ya está ocupado)."""
-    for puerto in range(desde, desde + intentos):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            try:
-                sock.bind(("0.0.0.0", puerto))
-                return puerto
-            except OSError:
-                continue
-    return desde
-
-
-def lanzar_web(args: argparse.Namespace) -> int:
-    """Arranca `streamlit run web.py` en la red local y, salvo --sin-tunel, un
-    túnel público HTTPS con su código QR para abrirla desde cualquier red."""
-    from rich.console import Group
-    from rich.panel import Panel
-    from rich.text import Text
-
-    from app.tunel import ErrorTunel, abrir_tunel, qr_ascii
-    from app.ui.console import obtener_consola, panel_error
-    from app.utils import limpiar_ruta
-
-    consola = obtener_consola()
-    web = RAIZ_PROYECTO / "web.py"
-    if not web.is_file():
-        consola.print(panel_error("Falta web.py", f"No se encuentra:\n{web}"))
-        return 1
-
-    puerto = puerto_libre(args.port)
-    ip = ip_local()
-    from app.auth import ErrorAuth, GestorAuth
-    auth = GestorAuth()
-    try:
-        auth.pins()                       # Crea pins.json si falta y valida la configuración
-        pins_de_fabrica = auth.usa_valores_por_defecto()
-    except ErrorAuth as error:
-        consola.print(panel_error("PINs no válidos", f"{error}\nCorrige pins.json o las "
-                                                      "variables PIN_CONSULTA / PIN_TECNICO."))
-        return 1
-    comando = [sys.executable, "-m", "streamlit", "run", str(web),
-               "--server.address", "0.0.0.0", "--server.port", str(puerto),
-               "--server.headless", "true", "--browser.gatherUsageStats", "false"]
-    if args.file:      # Ruta absoluta: el servidor no depende del directorio actual
-        comando += ["--", "--file", str(limpiar_ruta(args.file))]
-    entorno = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-
-    try:
-        servidor = subprocess.Popen(comando, env=entorno)
-    except OSError as error:
-        consola.print(panel_error("No se ha podido arrancar Streamlit", str(error)))
-        return 1
-
-    tunel, error_tunel = None, None
-    try:
-        if not args.sin_tunel:
-            with consola.status("[cyan]Abriendo túnel público (acceso desde cualquier red)…[/]",
-                                spinner="dots"):
-                try:
-                    tunel = abrir_tunel(puerto, args.tunel)
-                except ErrorTunel as error:
-                    error_tunel = str(error)
-
-        texto = Text()
-        texto.append("Abre en Google Chrome:\n\n", style="bold")
-        texto.append("  PC (este equipo)        ", style="dim")
-        texto.append(f"http://localhost:{puerto}\n", style="bold cyan underline")
-        texto.append("  Móvil (misma Wi-Fi)     ", style="dim")
-        texto.append(f"http://{ip}:{puerto}\n", style="bold green underline")
-        if tunel:
-            texto.append("  Cualquier red (4G/5G)   ", style="dim")
-            texto.append(f"{tunel.url}\n", style="bold magenta underline")
-            texto.append(f"                          vía {tunel.proveedor}", style="dim")
-            if tunel.proveedor == "localtunnel":
-                texto.append(" (la 1.ª vez pide la IP pública de este PC como contraseña)",
-                             style="dim")
-            texto.append("\n")
-        texto.append("\n")
-        if puerto != args.port:
-            texto.append(f"El puerto {args.port} estaba ocupado: se usa el {puerto}.\n",
-                         style="yellow")
-        if ip == "127.0.0.1":
-            texto.append("No se ha detectado una red local: el móvil no podrá conectar.\n",
-                         style="yellow")
-        texto.append(f"Acceso por PIN (Consultor / Técnico), leído de {auth.origen()}.\n",
-                     style="green")
-        if pins_de_fabrica:
-            texto.append("⚠ Se usan los PINs de fábrica (1234 / 12345): cualquiera que los "
-                         "conozca entra. Cámbialos en pins.json o con PIN_CONSULTA / "
-                         "PIN_TECNICO.\n", style="bold red")
-        texto.append("Ctrl+C detiene el servidor" + (" y el túnel." if tunel else "."),
-                     style="dim")
-
-        bloques: list = [texto]
-        if tunel and (qr := qr_ascii(tunel.url)):
-            bloques += [Text("\nEscanea con la cámara del móvil:", style="bold"),
-                        Text(qr, no_wrap=True, overflow="crop")]
-        elif tunel:
-            bloques.append(Text("\n(Instala «qrcode» para ver aquí el código QR.)", style="dim"))
-        consola.print(Panel(Group(*bloques), title="[bold]Monitor web de incidencias[/]",
-                            border_style="cyan", expand=False, padding=(1, 2)))
-        if error_tunel:
-            consola.print(Panel(Text(error_tunel), title="[bold yellow]Sin acceso externo[/]",
-                                border_style="yellow", expand=False, padding=(1, 2)))
-        return servidor.wait()
-    except KeyboardInterrupt:             # Ctrl+C: se cierra todo limpiamente
-        return 0
-    finally:
-        if tunel:
-            tunel.cerrar()
-        if servidor.poll() is None:
-            servidor.terminate()
-            try:
-                servidor.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                servidor.kill()
 
 
 def generar_html(args: argparse.Namespace) -> int:
@@ -299,7 +130,7 @@ def inyectar_demo(args: argparse.Namespace) -> int:
           f"  #{resultado.id_anomala}  ANOMALÍA · fecha imposible (1668) + texto aleatorio "
           f"tipo Faker\n"
           f"  Total en el archivo: {resultado.total} incidencias.\n"
-          f"  Si la web está abierta, mostrará el aviso y los gráficos actualizados en ~2 s.\n"
+          f"  Ejecuta `python3 main.py --html` para regenerar el dashboard con los nuevos datos.\n"
           f"  Para deshacerlo (si el XML está en Git): git checkout -- \"{ruta.name}\"")
     return 0
 
@@ -341,8 +172,6 @@ def main(argv: list[str] | None = None) -> int:
         return generar_html(args)
     if args.demo:
         return inyectar_demo(args)
-    if args.web:
-        return lanzar_web(args) if dependencias_ok(DEPENDENCIAS_WEB) else 1
     if not dependencias_ok():
         return 1
 

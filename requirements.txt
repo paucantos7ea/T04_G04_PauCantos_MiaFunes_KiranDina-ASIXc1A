@@ -1,12 +1,5 @@
-# Menú de terminal
+# Menú de terminal interactivo
 rich==15.0.0
 questionary==2.1.1
-# Interfaz web (también lo instala Streamlit Community Cloud)
-streamlit>=1.67
-plotly>=5.24
-pandas>=2.2
-# Código QR del túnel público en la terminal
-qrcode>=7.4
-# Tests
+# Tests automatizados
 pytest>=8.0
-# Opcional: túnel con ngrok ->  pip install pyngrok  (+ variable NGROK_AUTHTOKEN)

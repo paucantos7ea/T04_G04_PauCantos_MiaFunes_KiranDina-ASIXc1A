@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,8 +26,15 @@ from conftest import HOY, RAIZ, escribir_xml, inc
 from app.analytics import analizar_archivo
 from app.html_builder import datos_embebidos, generar_html
 
-NAVEGADOR = next((r for n in ("chromium", "chromium-browser", "google-chrome",
-                              "google-chrome-stable") if (r := shutil.which(n))), None)
+_RUTAS_CHROME = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+)
+NAVEGADOR = next(
+    (r for n in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable")
+     if (r := shutil.which(n))),
+    next((p for p in _RUTAS_CHROME if Path(p).is_file()), None),
+)
 AHORA = datetime(2026, 11, 19, 10, 30)
 PINES = {"consulta": "1234", "tecnico": "12345"}
 
@@ -79,6 +87,11 @@ def test_html_autocontenido(casos, reglas):
     assert "Actualizado: 19/11/2026 10:30" in html
     assert "21 registros procesados" in html
     assert 'name="viewport"' in html
+    # Estructura en 5 acordeones + navegación rápida + controles de expansión
+    for id_acc in ("acc-validez", "acc-evolucion", "acc-masivas", "acc-explorador", "acc-reglas"):
+        assert f'id="{id_acc}"' in html
+    assert 'id="salto-seccion"' in html
+    assert 'id="btn-expandir-todo"' in html and 'id="btn-contraer-todo"' in html
     # Sin recursos locales: solo Chart.js por CDN (GitHub Pages sin rutas rotas)
     externos = re.findall(r'(?:src|href)="([^"#]+)"', html)
     assert all(u.startswith(("https://", "data:")) for u in externos), externos
@@ -114,8 +127,9 @@ def test_main_html_genera_index(tmp_path):
     xml = escribir_xml(tmp_path / "respotes.xml", [inc("1"), inc("2", desc="Peso conocer presenta.")])
     salida = tmp_path / "web" / "index.html"
     salida.parent.mkdir()
-    proceso = subprocess.run(["python3", str(RAIZ / "main.py"), "--html", "--file", str(xml),
-                              "--salida", str(salida)], capture_output=True, text=True, timeout=120,
+    proceso = subprocess.run([sys.executable, str(RAIZ / "main.py"), "--html", "--file", str(xml),
+                              "--salida", str(salida)], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, encoding="utf-8", timeout=120,
                              env={**os.environ, "PIN_CONSULTA": "2468", "PIN_TECNICO": "13579"})
     assert proceso.returncode == 0, proceso.stderr
     assert _carga(salida.read_text(encoding="utf-8"))["meta"]["validas"] == 1
@@ -172,7 +186,8 @@ def _ejecutar(html: str, tmp_path: Path, xml: str) -> str:
         [NAVEGADOR, "--headless=new", "--no-sandbox", "--disable-gpu",
          f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=30000",
          "--dump-dom", pagina.as_uri()],
-        capture_output=True, text=True, timeout=180)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=180)
     return proceso.stdout
 
 
@@ -251,7 +266,8 @@ def test_pantalla_pin_en_el_navegador(casos, reglas, tmp_path):
     dom = subprocess.run(
         [NAVEGADOR, "--headless=new", "--no-sandbox", "--disable-gpu",
          f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=20000",
-         "--dump-dom", pagina.as_uri()], capture_output=True, text=True, timeout=180).stdout
+         "--dump-dom", pagina.as_uri()], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180).stdout
     m = re.search(r'<pre id="resultado-pin">(.*?)</pre>', dom, re.S)
     assert m, "el arnés del PIN no ha escrito resultados"
     import html as html_mod
@@ -312,7 +328,8 @@ def test_paridad_masivas_duplicados_sla(reglas, tmp_path):
     dom = subprocess.run(
         [NAVEGADOR, "--headless=new", "--no-sandbox", "--disable-gpu",
          f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=60000",
-         "--dump-dom", pagina.as_uri()], capture_output=True, text=True, timeout=300).stdout
+         "--dump-dom", pagina.as_uri()], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300).stdout
     m = re.search(r'<pre id="resultado-op">(.*?)</pre>', dom, re.S)
     assert m, "el arnés de operaciones no ha escrito resultados"
     import html as html_mod
@@ -395,7 +412,8 @@ def test_modo_tecnico_en_el_navegador(casos, reglas, tmp_path):
     dom = subprocess.run(
         [NAVEGADOR, "--headless=new", "--no-sandbox", "--disable-gpu",
          f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=30000",
-         "--dump-dom", pagina.as_uri()], capture_output=True, text=True, timeout=180).stdout
+         "--dump-dom", pagina.as_uri()], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180).stdout
     m = re.search(r'<pre id="resultado-tec">(.*?)</pre>', dom, re.S)
     assert m, "el arnés del modo Técnico no ha escrito resultados"
     import html as html_mod
@@ -433,3 +451,55 @@ def test_modo_tecnico_en_el_navegador(casos, reglas, tmp_path):
                   "Tormentas de incidencias", "Tickets duplicados", "@media print", "</html>"):
         assert texto in inf, texto
     assert "<script" not in inf
+
+
+ARNES_ACORDEONES = r"""
+<script>
+(() => {
+  const r = {};
+  try {
+    document.getElementById("acceso-pin").value = "12345";
+    document.getElementById("acceso-form").requestSubmit();
+    const accs = [...document.querySelectorAll("details.acordeon")];
+    r.total = accs.length;
+    r.inicialAbiertos = accs.filter((a) => a.open).length;
+    document.getElementById("btn-expandir-todo").click();
+    r.trasExpandir = accs.filter((a) => a.open).length;
+    document.getElementById("btn-contraer-todo").click();
+    r.trasContraer = accs.filter((a) => a.open).length;
+    const salto = document.getElementById("salto-seccion");
+    salto.value = "acc-masivas";
+    salto.dispatchEvent(new Event("change", { bubbles: true }));
+    r.saltoAbrioMasivas = document.getElementById("acc-masivas").open;
+    r.kpis = document.querySelectorAll("#kpis .kpi").length;
+    r.badgeMasivas = document.getElementById("badge-masivas").textContent;
+  } catch (e) { r.error = String(e && e.stack || e); }
+  const pre = document.createElement("pre"); pre.id = "resultado-acc";
+  pre.textContent = JSON.stringify(r); document.body.append(pre);
+})();
+</script>
+"""
+
+
+@pytest.mark.skipif(NAVEGADOR is None, reason="no hay Chromium/Chrome instalado")
+def test_acordeones_y_navegacion_en_el_navegador(casos, reglas, tmp_path):
+    html = generar_html(casos, reglas, AHORA, HOY, PINES)
+    pagina = tmp_path / "acordeones.html"
+    pagina.write_text(html.replace("</body>", ARNES_ACORDEONES + "</body>"), encoding="utf-8")
+    dom = subprocess.run(
+        [NAVEGADOR, "--headless=new", "--no-sandbox", "--disable-gpu",
+         f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=20000",
+         "--dump-dom", pagina.as_uri()], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180).stdout
+    m = re.search(r'<pre id="resultado-acc">(.*?)</pre>', dom, re.S)
+    assert m, "el arnés de acordeones no ha escrito resultados"
+    import html as html_mod
+    r = json.loads(html_mod.unescape(m.group(1)))
+    assert "error" not in r, r.get("error")
+    assert r["total"] == 5
+    assert r["inicialAbiertos"] == 0
+    assert r["trasExpandir"] == 5
+    assert r["trasContraer"] == 0
+    assert r["saltoAbrioMasivas"] is True
+    assert r["kpis"] == 6
+    assert r["badgeMasivas"]

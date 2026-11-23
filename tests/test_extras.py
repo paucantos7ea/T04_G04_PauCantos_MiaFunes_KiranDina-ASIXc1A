@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Tests de las piezas nuevas: rules.json, gestion.json, radar, minería y túnel."""
+"""Tests de las piezas modulares: rules.json, gestion.json, radar y minería."""
 
 from __future__ import annotations
 
 import json
-import os
-import stat
 from datetime import date, timedelta
 
 import pytest
@@ -15,7 +13,6 @@ from app.analytics import (NIVEL_CRONICO, NIVEL_REINCIDENTE, analizar_archivo,
                            equipos_reincidentes, palabras_emergentes, radar_zonas)
 from app.gestion import ErrorGestion, GestorReparaciones
 from app.rules import ErrorReglas, anadir_palabra, cargar_reglas, guardar_reglas
-from app.tunel import ErrorTunel, abrir_tunel, qr_ascii
 
 # ══════════════════════════════════════════════════════════════════════════
 # rules.json
@@ -126,37 +123,3 @@ def test_palabras_emergentes(analizar, reglas):
     textos = {t.texto for t in palabras_emergentes(datos.todas, conocidos)}
     assert "navegador" in textos and "tanca inesperadament" in textos
     assert "error" not in textos                          # Ya es palabra clave
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Túnel público (con un cloudflared simulado) y QR
-# ══════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.skipif(os.name == "nt", reason="el binario simulado es un script de shell")
-def test_tunel_captura_la_url(tmp_path, monkeypatch):
-    falso = tmp_path / "cloudflared"
-    falso.write_text("#!/bin/sh\n"
-                     "echo 'INF Requesting new quick Tunnel on trycloudflare.com...'\n"
-                     "echo 'INF |  https://prueba-uno-dos.trycloudflare.com  |'\n"
-                     "sleep 30\n", encoding="utf-8")
-    falso.chmod(falso.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
-    tunel = abrir_tunel(8501, "cloudflared", espera=10)
-    try:
-        assert tunel.proveedor == "cloudflared"
-        assert tunel.url == "https://prueba-uno-dos.trycloudflare.com"
-    finally:
-        tunel.cerrar()
-
-
-def test_tunel_sin_herramientas_explica_que_instalar(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", str(tmp_path))             # Nada instalado
-    monkeypatch.setattr("app.tunel.importlib.util.find_spec", lambda nombre: None)
-    with pytest.raises(ErrorTunel, match="cloudflared"):
-        abrir_tunel(8501)
-
-
-def test_qr_ascii():
-    qr = qr_ascii("https://prueba.trycloudflare.com")
-    pytest.importorskip("qrcode")
-    assert qr and "█" in qr and len(qr.splitlines()) > 10

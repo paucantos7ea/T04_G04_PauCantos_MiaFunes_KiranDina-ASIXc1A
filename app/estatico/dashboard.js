@@ -1,6 +1,7 @@
-/* Interfaz del dashboard estático: KPIs, gráficos (Chart.js), filtros, lista paginada,
- * modal de auditoría, reglas activas y carga de un XML local. Todo el texto que viene
- * de los datos se escapa con esc() antes de entrar en el HTML. */
+/* Interfaz del dashboard estático basada en acordeones: KPIs siempre visibles,
+ * gráficos (Chart.js con resize automático al desplegar), filtros rápidos y avanzados,
+ * gestión táctil de estados para Técnico, masivas/duplicados, modal de trazabilidad,
+ * reglas activas y auditoría. Todo texto de datos se escapa con esc(). */
 "use strict";
 
 (() => {
@@ -55,11 +56,11 @@
 
   const ST = {
     publicados: preparar(expandir(D)), todos: null, filtrados: [], pagina: 1,
-    topPor: "equipo", graficos: {}, origen: null, sla: [], idsSla: new Set(), verTodas: false,
-    rol: null, reglas: D.config.reglas, seg: Tecnico.seguimiento(), mttr: null, xmlLocal: null,
-    reglasLocales: false,
+    topPor: "equipo", graficos: {}, origen: null, sla: [], idsSla: new Set(), soloSla: false,
+    verTodas: false, rol: null, reglas: D.config.reglas, seg: Tecnico.seguimiento(), mttr: null,
+    xmlLocal: null, reglasLocales: false,
   };
-  ST.original = ST.publicados;                    // Análisis publicado por Python (reglas del repo)
+  ST.original = ST.publicados;
   const ESTADOS = D.config.estadosGestion || ["Pendiente", "En curso", "Resuelta"];
   const EMOJI_REP = { "Pendiente": "⏳", "En curso": "🛠️", "Resuelta": "✅" };
   const estadoDe = (r) => (ST.seg[r.id] && ST.seg[r.id].estado) || "Pendiente";
@@ -68,7 +69,17 @@
   const SLA = D.config.sla || {}, MAS = D.config.masivas || { minTormenta: 3, ventana: 0, umbral: 0.75, margen: 3 };
   ST.todos = ST.publicados;
 
-  // ── Filtros ────────────────────────────────────────────────────────────
+  // ── Referencias a los 5 acordeones ─────────────────────────────────────
+  const ACC = {
+    validez: $("#acc-validez"),
+    evolucion: $("#acc-evolucion"),
+    masivas: $("#acc-masivas"),
+    explorador: $("#acc-explorador"),
+    reglas: $("#acc-reglas"),
+  };
+  const TODOS_ACC = Object.values(ACC);
+
+  // ── Filtros (rápidos + detallados) ─────────────────────────────────────
   const F = { texto: $("#f-texto"), estado: $("#f-estado"), sev: $("#f-sev"), cat: $("#f-cat"), marca: $("#f-marca"), anom: $("#f-anom"), rep: $("#f-rep") };
 
   function rellenarSelect(sel, pares, primero) {
@@ -87,9 +98,43 @@
     rellenarSelect(F.anom, contar(ST.todos.flatMap((r) => [...new Set(r.anom.map((a) => a.tipo))].map((t) => ({ t }))), (x) => x.t), "Todo tipo de anomalía");
   }
 
+  function hayFiltroActivo() {
+    return ST.soloSla || Object.values(F).some((el) => el.value.trim() !== "");
+  }
+
+  function sincronizarPildoras() {
+    let activo = "custom";
+    if (!hayFiltroActivo()) activo = "todas";
+    else if (ST.soloSla && !F.texto.value && !F.estado.value && !F.sev.value && !F.cat.value && !F.marca.value && !F.anom.value && !F.rep.value) activo = "sla";
+    else if (!ST.soloSla && !F.texto.value && !F.cat.value && !F.marca.value && !F.anom.value && !F.rep.value) {
+      if (F.estado.value === "validas" && !F.sev.value) activo = "validas";
+      else if (F.estado.value === "bloqueadas" && !F.sev.value) activo = "bloqueadas";
+      else if (F.sev.value === "Crítica" && (!F.estado.value || F.estado.value === "validas")) activo = "criticas";
+    }
+    for (const b of document.querySelectorAll("#filtros-rapidos button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.rapido === activo));
+    }
+    const chip = $("#chip-filtro-activo");
+    if (hayFiltroActivo()) {
+      chip.innerHTML = `Filtro: ${num(ST.filtrados.length)}/${num(ST.todos.length)} <button type="button" id="quitar-filtro-chip" aria-label="Quitar filtros">✕</button>`;
+      chip.hidden = false;
+    } else {
+      chip.hidden = true;
+    }
+  }
+
+  function limpiarFiltros() {
+    for (const el of Object.values(F)) el.value = "";
+    ST.soloSla = false;
+    filtrar();
+  }
+
   function filtrar() {
     const q = Motor.normalizar(F.texto.value);
     const { estado, sev, cat, marca, anom, rep } = Object.fromEntries(Object.entries(F).map(([k, el]) => [k, el.value]));
+    const slaGlobal = Operaciones.fueraDeSla(ST.todos, SLA, NIVELES, new Date(), ST.seg);
+    const idsSlaGlobal = new Set(slaGlobal.map((a) => a.r.id));
+
     ST.filtrados = ST.todos.filter((r) => {
       if (q) {
         if (q.startsWith("#")) { if (Motor.normalizar(r.id) !== q.slice(1).trim()) return false; }
@@ -102,33 +147,98 @@
       if (marca && r.marca !== marca) return false;
       if (anom && !r.anom.some((a) => a.tipo === anom)) return false;
       if (rep && !(r.valida && estadoDe(r) === rep)) return false;
+      if (ST.soloSla && !idsSlaGlobal.has(r.id)) return false;
       return true;
     });
     ST.pagina = 1;
     ST.sla = Operaciones.fueraDeSla(ST.filtrados, SLA, NIVELES, new Date(), ST.seg);
     ST.mttr = Tecnico.mttr(ST.filtrados, ST.seg, NIVELES);
     ST.idsSla = new Set(ST.sla.map((a) => a.r.id));
+    sincronizarPildoras();
     pintar();
   }
 
   let espera;
   F.texto.addEventListener("input", () => { clearTimeout(espera); espera = setTimeout(filtrar, 150); });
   for (const el of [F.estado, F.sev, F.cat, F.marca, F.anom, F.rep]) el.addEventListener("change", filtrar);
-  $("#f-limpiar").addEventListener("click", () => { for (const el of Object.values(F)) el.value = ""; filtrar(); });
+  $("#f-limpiar").addEventListener("click", limpiarFiltros);
+  $("#chip-filtro-activo").addEventListener("click", (e) => { if (e.target.id === "quitar-filtro-chip") limpiarFiltros(); });
+  $("#filtros-rapidos").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-rapido]");
+    if (!b) return;
+    for (const el of Object.values(F)) el.value = "";
+    ST.soloSla = false;
+    const modo = b.dataset.rapido;
+    if (modo === "validas") F.estado.value = "validas";
+    else if (modo === "bloqueadas") F.estado.value = "bloqueadas";
+    else if (modo === "criticas") { F.estado.value = "validas"; F.sev.value = "Crítica"; }
+    else if (modo === "sla") ST.soloSla = true;
+    filtrar();
+  });
 
-  // ── KPIs ───────────────────────────────────────────────────────────────
+  // ── KPIs ejecutivos (siempre visibles) ─────────────────────────────────
   function kpis() {
-    const f = ST.filtrados, val = f.filter((r) => r.valida), n = f.length;
-    const tarjeta = (et, valor, sub, color, clase = "") =>
-      `<div class="kpi ${clase}" style="--color:${color}"><div class="etiqueta">${et}</div><div class="valor">${valor}</div><div class="sub">${sub}</div></div>`;
+    const f = ST.filtrados, val = f.filter((r) => r.valida), n = f.length, anom = n - val.length;
+    const crit = val.filter((r) => r.sev === "Crítica").length;
+    const altas = val.filter((r) => r.sev === "Alta").length;
+    const medias = val.filter((r) => r.sev === "Media").length;
+    const leves = val.filter((r) => r.sev === "Leve").length;
+    const tarjeta = (et, valor, sub, color) =>
+      `<div class="kpi" style="--color:${color}"><div class="etiqueta">${et}</div><div class="valor">${valor}</div><div class="sub">${sub}</div></div>`;
     $("#kpis").innerHTML =
-      tarjeta("Procesadas", num(n), n === ST.todos.length ? "todas" : `de ${num(ST.todos.length)}`, "var(--acento)", "principal") +
-      tarjeta("Válidas", num(val.length), pct(val.length, n), "var(--ok)") +
-      tarjeta("Bloqueadas", num(n - val.length), pct(n - val.length, n), "var(--error)") +
-      NIVELES.map((nv) => tarjeta(nv, num(val.filter((r) => r.sev === nv).length), "válidas", `var(${COLOR_NIVEL[nv]})`)).join("") +
-      tarjeta("⏰ Fuera de SLA", num(ST.sla.length), ST.sla.length ? "críticas/altas sin resolver" : "todo dentro de SLA",
-              ST.sla.length ? "var(--error)" : "var(--ok)") +
+      tarjeta("Total Procesadas", num(n), n === ST.todos.length ? "100 % del conjunto" : `de ${num(ST.todos.length)} totales`, "var(--acento)") +
+      tarjeta("Válidas %", pct(val.length, n), `${num(val.length)} incidencias válidas`, "var(--ok)") +
+      tarjeta("Anomalías %", pct(anom, n), `${num(anom)} bloqueadas`, "var(--error)") +
+      tarjeta("Críticas", num(crit), `${num(altas)} altas · ${num(medias)} med · ${num(leves)} lev`, "var(--critica)") +
+      tarjeta("⏰ Fuera de SLA", num(ST.sla.length), ST.sla.length ? "críticas/altas abiertas" : "todo dentro de SLA", ST.sla.length ? "var(--error)" : "var(--ok)") +
       tarjeta("⏱️ MTTR", Operaciones.duracion(ST.mttr.minutos), `${num(ST.mttr.resueltas)} resueltas medidas`, "var(--anom-fecha)");
+  }
+
+  // ── Badges resumen de los 5 acordeones ─────────────────────────────────
+  function actualizarBadges(torm = null, dups = null) {
+    const f = ST.filtrados, val = f.filter((r) => r.valida), n = f.length;
+    const crit = val.filter((r) => r.sev === "Crítica").length;
+
+    // 1. Validez y Severidad
+    const bVal = $("#badge-validez");
+    bVal.textContent = `${pct(val.length, n)} válidas · ${num(crit)} críticas`;
+    bVal.className = "acordeon-badge" + (crit ? " alerta" : " ok");
+
+    // 2. Evolución Temporal y Top Equipos
+    const meses = new Set(val.filter((r) => r.fecha).map((r) => r.fecha.slice(0, 7))).size;
+    const top1 = contar(val, (r) => r[ST.topPor])[0];
+    $("#badge-evolucion").textContent = `${num(meses)} meses${top1 ? ` · Top: ${Motor.truncar(top1[0], 18)}` : ""}`;
+
+    // 3. Incidencias Masivas y Duplicadas (destacado)
+    if (!torm || !dups) {
+      torm = Operaciones.tormentas(val, MAS.minTormenta, MAS.ventana, NIVELES);
+      dups = Operaciones.duplicados(val, MAS.umbral, MAS.margen);
+    }
+    const nDups = dups.reduce((t, g) => t + g.ids.length - 1, 0);
+    const bMas = $("#badge-masivas");
+    if (torm.length || nDups) {
+      bMas.textContent = `⚡ ${num(torm.length)} tormentas · 👯 ${num(nDups)} duplicados`;
+      bMas.className = "acordeon-badge alerta";
+    } else {
+      bMas.textContent = "Sin alertas activas";
+      bMas.className = "acordeon-badge ok";
+    }
+
+    // 4. Explorador de Incidencias
+    const bExp = $("#badge-explorador");
+    bExp.textContent = hayFiltroActivo() ? `${num(n)} / ${num(ST.todos.length)} filtradas` : `${num(n)} incidencias`;
+    bExp.className = "acordeon-badge" + (hayFiltroActivo() ? " acento" : "");
+
+    // 5. Reglas y Auditoría
+    const bReg = $("#badge-reglas");
+    if (esTecnico()) {
+      const nEv = Tecnico.eventos().length;
+      bReg.textContent = `${ST.reglasLocales ? "Reglas locales" : "Reglas activas"} · ${num(nEv)} eventos`;
+      bReg.className = "acordeon-badge" + (ST.reglasLocales ? " acento" : "");
+    } else {
+      bReg.textContent = ST.reglasLocales ? "Reglas locales · Solo lectura" : "Reglas activas · Solo lectura";
+      bReg.className = "acordeon-badge";
+    }
   }
 
   // ── Alerta de SLA (Críticas / Altas abiertas demasiado tiempo) ─────────
@@ -146,11 +256,108 @@
     caja.innerHTML = `<details class="alerta-sla"><summary>⏰ ${num(ST.sla.length)} tickets fuera de SLA sin resolver: ${esc(porNivel)} · Límites: ${esc(limites)}</summary>
       <div class="tabla-envoltorio"><table><thead><tr><th>ID</th><th>Severidad</th><th>Planta / oficina</th><th>Descripción</th><th>Abierta</th></tr></thead>
       <tbody>${filas}</tbody></table></div>
-      <p class="nota">Abierta desde la «Marca de temps» del formulario. Desaparecen al marcarlas como «Resuelta» (modo Técnico, en la ficha de la incidencia).${ST.sla.length > 300 ? " Se muestran las 300 primeras." : ""}</p></details>`;
+      <p class="nota">Abierta desde la «Marca de temps» del formulario. Desaparecen al marcarlas como «Resuelta» (modo Técnico).${ST.sla.length > 300 ? " Se muestran las 300 primeras." : ""}</p></details>`;
   }
   $("#alerta-sla").addEventListener("click", (e) => {
     const fila = e.target.closest("tr[data-i]");
     if (fila) abrir(ST.todos[+fila.dataset.i]);
+  });
+
+  // ── Gráficos (Chart.js) y redimensionado garantizado ───────────────────
+  const hayChart = () => typeof window.Chart !== "undefined";
+
+  function grafico(id, config) {
+    if (!hayChart()) return;
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    const g = ST.graficos[id];
+    if (g) { g.data = config.data; g.options = config.options; g.update(); return; }
+    ST.graficos[id] = new Chart(canvas, config);
+  }
+
+  function redimensionarGraficos(ids) {
+    if (!hayChart()) return;
+    const ajustar = () => {
+      for (const id of ids) {
+        const g = ST.graficos[id];
+        if (g) { g.resize(); g.update("none"); }
+      }
+    };
+    requestAnimationFrame(() => {
+      ajustar();
+      requestAnimationFrame(ajustar);
+    });
+    setTimeout(ajustar, 260);
+  }
+
+  function opcionesBase(extra = {}) {
+    const texto = VAR("--texto-suave"), rejilla = VAR("--borde");
+    return {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 220 },
+      plugins: { legend: { labels: { color: texto, boxWidth: 12 } }, tooltip: { intersect: false } },
+      scales: {
+        x: { ticks: { color: texto }, grid: { color: rejilla } },
+        y: { ticks: { color: texto }, grid: { color: rejilla }, beginAtZero: true },
+      },
+      ...extra,
+    };
+  }
+
+  function graficosValidez() {
+    $("#sin-graficos").hidden = hayChart();
+    if (!hayChart() || !ACC.validez.open) return;
+    const f = ST.filtrados, val = f.filter((r) => r.valida);
+
+    const partes = [["Válidas", val.length, "--ok"]];
+    for (const [tipo, n] of contar(f.filter((r) => !r.valida), (r) => r.anom[0].tipo)) partes.push([tipo, n, COLOR_ANOM[tipo] || "--error"]);
+    grafico("g-donut", {
+      type: "doughnut",
+      data: { labels: partes.map((p) => p[0]), datasets: [{ data: partes.map((p) => p[1]), backgroundColor: partes.map((p) => VAR(p[2])), borderColor: VAR("--superficie"), borderWidth: 2 }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "bottom", labels: { color: VAR("--texto-suave"), boxWidth: 12 } } } },
+    });
+
+    grafico("g-sev", {
+      type: "bar",
+      data: { labels: NIVELES, datasets: [{ label: "Incidencias", data: NIVELES.map((n) => val.filter((r) => r.sev === n).length), backgroundColor: NIVELES.map((n) => VAR(COLOR_NIVEL[n])), borderRadius: 6 }] },
+      options: opcionesBase({ plugins: { legend: { display: false } } }),
+    });
+  }
+
+  function graficosEvolucion() {
+    if (!hayChart() || !ACC.evolucion.open) return;
+    const val = ST.filtrados.filter((r) => r.valida);
+
+    const meses = [...new Set(val.filter((r) => r.fecha).map((r) => r.fecha.slice(0, 7)))].sort();
+    const porMes = (filtro) => meses.map((m) => val.filter((r) => r.fecha && r.fecha.startsWith(m) && filtro(r)).length);
+    grafico("g-tiempo", {
+      type: "bar",
+      data: {
+        labels: meses.map((m) => `${m.slice(5)}/${m.slice(0, 4)}`),
+        datasets: [
+          ...NIVELES.map((n) => ({ label: n, data: porMes((r) => r.sev === n), backgroundColor: VAR(COLOR_NIVEL[n]), stack: "s" })),
+          { type: "line", label: "Total", data: porMes(() => true), borderColor: VAR("--texto-suave"), backgroundColor: VAR("--texto-suave"), cubicInterpolationMode: "monotone", pointRadius: 2 },
+        ],
+      },
+      options: opcionesBase({ interaction: { mode: "index", intersect: false },
+        scales: { x: { stacked: true, ticks: { color: VAR("--texto-suave") }, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { color: VAR("--texto-suave") }, grid: { color: VAR("--borde") } } } }),
+    });
+
+    const top = contar(val, (r) => r[ST.topPor]).slice(0, 10);
+    grafico("g-top", {
+      type: "bar",
+      data: { labels: top.map((t) => Motor.truncar(t[0], 28)), datasets: [{ label: "Averías", data: top.map((t) => t[1]), backgroundColor: VAR("--acento"), borderRadius: 6 }] },
+      options: opcionesBase({ indexAxis: "y", plugins: { legend: { display: false } } }),
+    });
+  }
+
+  $("#g-top-por").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-por]");
+    if (!b) return;
+    ST.topPor = b.dataset.por;
+    for (const x of $("#g-top-por").querySelectorAll("button")) x.setAttribute("aria-pressed", String(x === b));
+    actualizarBadges();
+    graficosEvolucion();
+    redimensionarGraficos(["g-top"]);
   });
 
   // ── Masivas y duplicadas ───────────────────────────────────────────────
@@ -158,6 +365,9 @@
     const val = ST.filtrados.filter((r) => r.valida);
     const torm = Operaciones.tormentas(val, MAS.minTormenta, MAS.ventana, NIVELES);
     const dups = Operaciones.duplicados(val, MAS.umbral, MAS.margen);
+    actualizarBadges(torm, dups);
+    if (!ACC.masivas.open) return;
+
     const unicas = Operaciones.unicasEstimadas(val.length, torm, dups);
     const fechas = (g) => (g.desde === g.hasta ? dmy(g.desde) : `${dmy(g.desde)} – ${dmy(g.hasta)}`);
     const indice = new Map(ST.todos.map((r, i) => [r.id, i]));
@@ -204,82 +414,21 @@
     if (b) abrir(ST.todos[+b.dataset.i]);
   });
 
-  // ── Gráficos ───────────────────────────────────────────────────────────
-  const hayChart = () => typeof window.Chart !== "undefined";
-
-  function grafico(id, config) {
-    if (!hayChart()) return;
-    const g = ST.graficos[id];
-    if (g) { g.data = config.data; g.options = config.options; g.update(); return; }
-    ST.graficos[id] = new Chart(document.getElementById(id), config);
+  // ── Gestión rápida de estado (táctil en el Explorador para Técnico) ────
+  function cambiarEstadoRapido(id, nuevoEstado) {
+    if (!esTecnico()) return;
+    const g = ST.seg[id];
+    const notaActual = (g && g.nota) || "";
+    try {
+      const { anterior, registro } = Tecnico.actualizarSeguimiento(id, nuevoEstado, notaActual, ESTADOS);
+      let detalle = `ID ${id}: estado ${anterior} → ${registro.estado}`;
+      if (registro.nota) detalle += `; nota «${registro.nota}»`;
+      auditar("REPARACION", detalle);
+    } catch (err) { alert(err.message); return; }
+    ST.seg = Tecnico.seguimiento();
+    const pagina = ST.pagina;
+    opciones(); filtrar(); ST.pagina = pagina; lista();
   }
-
-  function opcionesBase(extra = {}) {
-    const texto = VAR("--texto-suave"), rejilla = VAR("--borde");
-    return {
-      responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
-      plugins: { legend: { labels: { color: texto, boxWidth: 12 } }, tooltip: { intersect: false } },
-      scales: {
-        x: { ticks: { color: texto }, grid: { color: rejilla } },
-        y: { ticks: { color: texto }, grid: { color: rejilla }, beginAtZero: true },
-      },
-      ...extra,
-    };
-  }
-
-  function graficos() {
-    $("#sin-graficos").hidden = hayChart();
-    if (!hayChart()) return;
-    const f = ST.filtrados, val = f.filter((r) => r.valida);
-
-    // 1. Donut validez vs. anomalías
-    const partes = [["Válidas", val.length, "--ok"]];
-    for (const [tipo, n] of contar(f.filter((r) => !r.valida), (r) => r.anom[0].tipo)) partes.push([tipo, n, COLOR_ANOM[tipo] || "--error"]);
-    grafico("g-donut", {
-      type: "doughnut",
-      data: { labels: partes.map((p) => p[0]), datasets: [{ data: partes.map((p) => p[1]), backgroundColor: partes.map((p) => VAR(p[2])), borderColor: VAR("--superficie"), borderWidth: 2 }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "bottom", labels: { color: VAR("--texto-suave"), boxWidth: 12 } } } },
-    });
-
-    // 2. Severidad
-    grafico("g-sev", {
-      type: "bar",
-      data: { labels: NIVELES, datasets: [{ label: "Incidencias", data: NIVELES.map((n) => val.filter((r) => r.sev === n).length), backgroundColor: NIVELES.map((n) => VAR(COLOR_NIVEL[n])), borderRadius: 6 }] },
-      options: opcionesBase({ plugins: { legend: { display: false } } }),
-    });
-
-    // 3. Evolución mensual apilada por severidad + total
-    const meses = [...new Set(val.filter((r) => r.fecha).map((r) => r.fecha.slice(0, 7)))].sort();
-    const porMes = (filtro) => meses.map((m) => val.filter((r) => r.fecha && r.fecha.startsWith(m) && filtro(r)).length);
-    grafico("g-tiempo", {
-      type: "bar",
-      data: {
-        labels: meses.map((m) => `${m.slice(5)}/${m.slice(0, 4)}`),
-        datasets: [
-          ...NIVELES.map((n) => ({ label: n, data: porMes((r) => r.sev === n), backgroundColor: VAR(COLOR_NIVEL[n]), stack: "s" })),
-          { type: "line", label: "Total", data: porMes(() => true), borderColor: VAR("--texto-suave"), backgroundColor: VAR("--texto-suave"), cubicInterpolationMode: "monotone", pointRadius: 2 },
-        ],
-      },
-      options: opcionesBase({ interaction: { mode: "index", intersect: false },
-        scales: { x: { stacked: true, ticks: { color: VAR("--texto-suave") }, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { color: VAR("--texto-suave") }, grid: { color: VAR("--borde") } } } }),
-    });
-
-    // 4. Top equipos / zonas / categorías / marcas
-    const top = contar(val, (r) => r[ST.topPor]).slice(0, 10);
-    grafico("g-top", {
-      type: "bar",
-      data: { labels: top.map((t) => Motor.truncar(t[0], 28)), datasets: [{ label: "Averías", data: top.map((t) => t[1]), backgroundColor: VAR("--acento"), borderRadius: 6 }] },
-      options: opcionesBase({ indexAxis: "y", plugins: { legend: { display: false } } }),
-    });
-  }
-
-  $("#g-top-por").addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-por]");
-    if (!b) return;
-    ST.topPor = b.dataset.por;
-    for (const x of $("#g-top-por").querySelectorAll("button")) x.setAttribute("aria-pressed", String(x === b));
-    graficos();
-  });
 
   // ── Lista paginada: tarjetas (< 768 px) o tabla ────────────────────────
   const escritorio = window.matchMedia("(min-width: 768px)");
@@ -289,6 +438,14 @@
     return r.valida
       ? `<span class="insignia" style="--color:var(${COLOR_NIVEL[r.sev]})">✔ ${esc(r.sev)}</span>`
       : `<span class="insignia" style="--color:var(${COLOR_ANOM[r.anom[0].tipo] || "--error"})">⛔ ${esc(r.anom[0].tipo)}</span>`;
+  }
+
+  function celdaReparacion(r) {
+    if (!r.valida) return "—";
+    const est = estadoDe(r);
+    if (!esTecnico()) return `${EMOJI_REP[est]} ${esc(est)}`;
+    return `<select class="select-estado-rapido" data-rep-id="${esc(r.id)}" aria-label="Estado de reparación #${esc(r.id)}">${ESTADOS.map((e) =>
+      `<option value="${esc(e)}" ${e === est ? "selected" : ""}>${EMOJI_REP[e]} ${esc(e)}</option>`).join("")}</select>`;
   }
 
   function lista() {
@@ -303,16 +460,23 @@
       cont.innerHTML = `<div class="tabla-envoltorio"><table class="registros"><thead><tr>
         <th>ID</th><th>Resultado</th><th>Reparación</th><th>Categoría</th><th>Marca</th><th>Equipo</th><th>Fecha</th><th>Descripción</th></tr></thead><tbody>` +
         trozo.map((r) => `<tr data-i="${ST.todos.indexOf(r)}" tabindex="0">
-          <td><strong>${esc(r.id)}</strong>${ST.idsSla.has(r.id) ? ' <span class="marca-sla" title="Fuera de SLA">⏰</span>' : ""}</td><td>${etiquetaResultado(r)}</td><td>${r.valida ? `${EMOJI_REP[estadoDe(r)]} ${esc(estadoDe(r))}` : "—"}</td><td>${esc(r.cat)}</td>
+          <td><strong>${esc(r.id)}</strong>${ST.idsSla.has(r.id) ? ' <span class="marca-sla" title="Fuera de SLA">⏰</span>' : ""}</td><td>${etiquetaResultado(r)}</td><td>${celdaReparacion(r)}</td><td>${esc(r.cat)}</td>
           <td>${esc(Motor.truncar(r.marca, 24) || "—")}</td><td>${esc(Motor.truncar(r.equipo, 24) || "—")}</td><td>${dmy(r.fecha)}</td>
           <td class="desc">${esc(Motor.truncar(r.desc, 110))}</td></tr>`).join("") + `</tbody></table></div>`;
     } else {
-      cont.innerHTML = `<div class="tarjetas">` + trozo.map((r) => `
-        <button class="registro" data-i="${ST.todos.indexOf(r)}" style="--color:${colorDe(r)}">
+      cont.innerHTML = `<div class="tarjetas">` + trozo.map((r) => {
+        const est = estadoDe(r);
+        const botonesRep = r.valida && esTecnico()
+          ? `<div class="gestion-tactil-card">${ESTADOS.map((e) =>
+              `<button type="button" class="btn-estado-rapido${e === est ? " activo" : ""}" data-rep-id="${esc(r.id)}" data-rep-est="${esc(e)}">${EMOJI_REP[e]} ${esc(e)}</button>`).join("")}</div>`
+          : "";
+        return `<div class="registro" role="button" tabindex="0" data-i="${ST.todos.indexOf(r)}" style="--color:${colorDe(r)}">
           <span class="linea"><span class="id">#${esc(r.id)}${ST.idsSla.has(r.id) ? ' <span class="marca-sla">⏰ SLA</span>' : ""}</span>${etiquetaResultado(r)}</span>
           <span class="desc">${esc(Motor.truncar(r.desc, 160) || "—")}</span>
-          <span class="meta">${esc([r.valida && `${EMOJI_REP[estadoDe(r)]} ${estadoDe(r)}`, r.cat, r.marca && Motor.truncar(r.marca, 22), r.equipo && Motor.truncar(r.equipo, 22), dmy(r.fecha)].filter(Boolean).join(" · "))}</span>
-        </button>`).join("") + `</div>`;
+          <span class="meta">${esc([r.valida && `${EMOJI_REP[est]} ${est}`, r.cat, r.marca && Motor.truncar(r.marca, 22), r.equipo && Motor.truncar(r.equipo, 22), dmy(r.fecha)].filter(Boolean).join(" · "))}</span>
+          ${botonesRep}
+        </div>`;
+      }).join("") + `</div>`;
     }
     $("#paginacion").innerHTML = paginas <= 1 ? "" : `
       <button class="boton" data-ir="${ST.pagina - 1}" ${ST.pagina <= 1 ? "disabled" : ""}>‹ Anterior</button>
@@ -322,17 +486,27 @@
       <button class="boton" type="submit">Ir</button></form>`;
   }
 
+  $("#lista").addEventListener("change", (e) => {
+    const sel = e.target.closest("select[data-rep-id]");
+    if (!sel) return;
+    e.stopPropagation();
+    cambiarEstadoRapido(sel.dataset.repId, sel.value);
+  });
   $("#lista").addEventListener("click", (e) => {
+    if (e.target.closest("select[data-rep-id]")) { e.stopPropagation(); return; }
+    const btnEst = e.target.closest("button[data-rep-id]");
+    if (btnEst) { e.stopPropagation(); cambiarEstadoRapido(btnEst.dataset.repId, btnEst.dataset.repEst); return; }
     const el = e.target.closest("[data-i]");
     if (el) abrir(ST.todos[+el.dataset.i]);
   });
   $("#lista").addEventListener("keydown", (e) => {
-    const el = e.target.closest("tr[data-i]");
+    if (e.target.closest("select, button")) return;
+    const el = e.target.closest("[data-i]");
     if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); abrir(ST.todos[+el.dataset.i]); }
   });
   $("#paginacion").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-ir]");
-    if (b && !b.disabled) { ST.pagina = +b.dataset.ir; lista(); $("#vista-registros").scrollIntoView({ block: "start" }); }
+    if (b && !b.disabled) { ST.pagina = +b.dataset.ir; lista(); ACC.explorador.scrollIntoView({ behavior: "smooth", block: "start" }); }
   });
   $("#paginacion").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -402,7 +576,7 @@
         <input type="text" name="nota" maxlength="500" placeholder="Nota rápida de reparación (ej.: cambiado el cable HDMI)" value="${esc(g ? g.nota : "")}">
         <button class="boton boton-primario" type="submit">💾 Guardar</button>
       </form>${tiempos}
-      <p class="nota">Se guarda en este navegador. Para compartirlo, descarga <code>gestion.json</code> en la pestaña 📜 Auditoría.</p></div>`;
+      <p class="nota">Se guarda en este navegador. Para compartirlo, descarga <code>gestion.json</code> en 🛡️ Reglas de Clasificación y Auditoría.</p></div>`;
   }
   $("#modal-cuerpo").addEventListener("submit", (e) => {
     const form = e.target.closest(".form-reparacion");
@@ -472,20 +646,62 @@
       </div>`;
   }
 
-  // ── Pestañas ───────────────────────────────────────────────────────────
-  const pestanas = document.querySelectorAll(".pestanas button");
-  for (const b of pestanas) b.addEventListener("click", () => {
-    for (const x of pestanas) x.setAttribute("aria-selected", String(x === b));
-    const p = b.dataset.pestana;
-    $("#vista-panel").hidden = p !== "panel";
-    $("#vista-registros").hidden = p !== "registros";
-    $("#vista-reglas").hidden = p !== "reglas";
-    $("#vista-masivas").hidden = p !== "masivas";
-    $("#vista-auditoria").hidden = p !== "auditoria";
-    $("#filtros").hidden = $("#kpis").hidden = p === "reglas" || p === "auditoria";
-    if (p === "auditoria") auditoria();
-    if (p === "panel") graficos();             // Chart.js necesita el lienzo visible para medir
-    if (p === "masivas") masivas();
+  // ── Gestión de Acordeones, Navegación Rápida y Redimensionado Chart.js ─
+  function alAbrirAcordeon(el) {
+    if (!el.open) return;
+    if (el === ACC.validez) {
+      graficosValidez();
+      redimensionarGraficos(["g-donut", "g-sev"]);
+    } else if (el === ACC.evolucion) {
+      graficosEvolucion();
+      redimensionarGraficos(["g-tiempo", "g-top"]);
+    } else if (el === ACC.masivas) {
+      masivas();
+      redimensionarGraficos(["g-tormentas"]);
+    } else if (el === ACC.reglas && esTecnico()) {
+      auditoria();
+    }
+  }
+
+  for (const el of TODOS_ACC) {
+    el.addEventListener("toggle", () => { if (el.open) alAbrirAcordeon(el); });
+  }
+
+  $("#salto-seccion").addEventListener("change", (e) => {
+    const id = e.target.value;
+    if (!id) return;
+    const destino = document.getElementById(id);
+    if (destino) {
+      destino.open = true;
+      alAbrirAcordeon(destino);
+      destino.classList.remove("destacado");
+      void destino.offsetWidth;
+      destino.classList.add("destacado");
+      destino.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    e.target.value = "";
+  });
+
+  $("#btn-expandir-todo").addEventListener("click", () => {
+    for (const el of TODOS_ACC) {
+      el.open = true;
+      alAbrirAcordeon(el);
+    }
+  });
+  $("#btn-contraer-todo").addEventListener("click", () => {
+    for (const el of TODOS_ACC) el.open = false;
+  });
+
+  let esperaResize;
+  window.addEventListener("resize", () => {
+    clearTimeout(esperaResize);
+    esperaResize = setTimeout(() => {
+      const abiertos = [];
+      if (ACC.validez.open) abiertos.push("g-donut", "g-sev");
+      if (ACC.evolucion.open) abiertos.push("g-tiempo", "g-top");
+      if (ACC.masivas.open) abiertos.push("g-tormentas");
+      if (abiertos.length) redimensionarGraficos(abiertos);
+    }, 140);
   });
 
   // ── Cargar otro XML local (no se sube a ningún sitio) ──────────────────
@@ -506,12 +722,12 @@
       ST.origen = archivo.name;
       ST.xmlLocal = texto;
       mostrarAviso(`<span>Mostrando <strong>${esc(archivo.name)}</strong> (${num(registros.length)} incidencias), analizado en este navegador: no se ha subido a ningún sitio.</span>
-        <button class="boton" id="volver" type="button">Volver a los datos publicados</button>`);
+        <button class="boton boton-sm" id="volver" type="button">Volver a los datos publicados</button>`);
       reiniciar();
     } catch (err) {
       const titulo = err instanceof Motor.ErrorCarga ? err.titulo : "No se ha podido leer el archivo";
       mostrarAviso(`<span><strong>${esc(titulo)}</strong>: ${esc(err.message).replace(/\n/g, "<br>")}</span>
-        <button class="boton" id="cerrar-aviso" type="button">Cerrar</button>`, true);
+        <button class="boton boton-sm" id="cerrar-aviso" type="button">Cerrar</button>`, true);
     }
   });
   aviso.addEventListener("click", (e) => {
@@ -520,13 +736,16 @@
     if (e.target.id === "cerrar-aviso") aviso.hidden = true;
   });
 
-  // ── Arranque ───────────────────────────────────────────────────────────
+  // ── Pintado global ─────────────────────────────────────────────────────
   function pintar() {
-    kpis(); alertaSla();
-    if (!$("#vista-panel").hidden) graficos();
-    if (!$("#vista-masivas").hidden) masivas();
+    kpis();
+    alertaSla();
+    masivas();
+    if (ACC.validez.open) { graficosValidez(); redimensionarGraficos(["g-donut", "g-sev"]); }
+    if (ACC.evolucion.open) { graficosEvolucion(); redimensionarGraficos(["g-tiempo", "g-top"]); }
+    if (ACC.masivas.open) redimensionarGraficos(["g-tormentas"]);
     lista();
-    if (!$("#vista-auditoria").hidden) auditoria();
+    if (esTecnico()) auditoria();
   }
 
   // ── Tema Claro / Oscuro (Claro por defecto; se recuerda en este navegador) ──
@@ -541,7 +760,7 @@
     const b = e.target.closest("button[data-tema]");
     if (!b) return;
     ponerTema(b.dataset.tema);
-    pintar();                                     // Los gráficos leen los colores del tema
+    pintar();
   });
 
   // ── Informe ejecutivo (misma estructura que app/exporter.informe_estado) ──
@@ -615,6 +834,7 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
   $("#descargar-informe").addEventListener("click", () => {
     Tecnico.descargar("informe_estado.html", informeHtml(), "text/html");
     auditar("EXPORTACION", `Descarga de informe_estado.html (${ST.todos.length} registros)`);
+    if (esTecnico()) { auditoria(); actualizarBadges(); }
   });
 
   // ── Editor de reglas (modo Técnico) ────────────────────────────────────
@@ -632,7 +852,7 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
   function avisoReglas() {
     if (ST.origen) return;
     if (ST.reglasLocales) mostrarAviso(`<span>🧮 Mostrando el análisis con <strong>reglas modificadas en este navegador</strong> (aún no están en <code>rules.json</code> del repositorio).</span>
-      <button class="boton" id="reglas-publicadas" type="button">Volver a las reglas publicadas</button>`);
+      <button class="boton boton-sm" id="reglas-publicadas" type="button">Volver a las reglas publicadas</button>`);
     else aviso.hidden = true;
   }
 
@@ -645,9 +865,8 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     return { texto: Tecnico.xmlDesdeRegistros(ST.original, D.config.etiquetas), exacto: false };
   }
 
-  /** Valida y compila `datos`, vuelve a analizar el XML en el navegador y lo pinta todo. */
   async function aplicarReglas(datos, { auditarCambio = true, motivo = "Editor de reglas" } = {}) {
-    const compiladas = Tecnico.compilarReglas(datos, D.config.reglasFabrica);   // Lanza ErrorReglas
+    const compiladas = Tecnico.compilarReglas(datos, D.config.reglasFabrica);
     const antes = ST.reglas.datos;
     const publicadas = mismasReglas(compiladas.datos, D.config.reglas.datos);
     Motor.configurar({ ...D.config, reglas: compiladas });
@@ -703,7 +922,7 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
   function editorReglas() {
     const ed = $("#editor-reglas");
     if (!esTecnico()) {
-      ed.innerHTML = `<p class="nota">🔒 Modo Consultor: puedes consultar las reglas, pero solo el modo Técnico puede editarlas.</p>`;
+      ed.innerHTML = `<p class="nota">🔒 Modo Consultor: puedes consultar las reglas, pero solo el modo Técnico puede editarlas o ver la auditoría de cambios.</p>`;
       return;
     }
     const d = ST.reglas.datos, E = D.config.etiquetasListas;
@@ -769,6 +988,7 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
         const limpio = Tecnico.validarReglas(leerEditor(), D.config.reglasFabrica);
         Tecnico.descargar("rules.json", JSON.stringify(limpio, null, 2) + "\n", "application/json");
         auditar("EXPORTACION", "Descarga de rules.json");
+        if (esTecnico()) { auditoria(); actualizarBadges(); }
       } catch (err) { $("#r-estado").textContent = `❌ ${err.message}`; $("#r-estado").className = "estado-editor error"; }
     } else if (t.id === "r-fabrica") {
       if (confirm("¿Sustituir las reglas por las originales del programa?"))
@@ -783,7 +1003,7 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     }
   });
 
-  // ── Auditoría (modo Técnico) ───────────────────────────────────────────
+  // ── Auditoría (visible únicamente en Modo Técnico, dentro del acordeón 5) ──
   const FA = { accion: "", rol: "", texto: "" };
   function auditoria() {
     const v = $("#vista-auditoria");
@@ -794,10 +1014,10 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     const opc = (lista, actual, primero) => `<option value="">${primero}</option>` + lista.map((x) => `<option ${x === actual ? "selected" : ""}>${esc(x)}</option>`).join("");
     const enfoque = document.activeElement && document.activeElement.id === "a-texto";
     v.innerHTML = `
-      <h2 class="seccion-titulo">📜 Auditoría de cambios</h2>
+      <h2 class="seccion-titulo">📜 Auditoría de Cambios</h2>
       <p class="nota">Accesos (y PINs fallidos), cambios de reparaciones y reglas y descargas hechos en <b>este navegador</b>, del más reciente al más antiguo, con el formato de <code>audit.log</code>. Para conservarlos, descarga los archivos y súbelos al repositorio.</p>
       <div class="acciones-editor">
-        <button class="boton" type="button" id="d-audit">⬇️ audit.log</button>
+        <button class="boton boton-primario" type="button" id="d-audit">⬇️ Descargar audit.log</button>
         <button class="boton" type="button" id="d-gestion">⬇️ gestion.json (${num(Object.keys(ST.seg).length)} reparaciones)</button>
         <button class="boton" type="button" id="d-reglas">⬇️ rules.json</button>
       </div>
@@ -817,18 +1037,19 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
   });
   $("#vista-auditoria").addEventListener("input", (e) => { if (e.target.id === "a-texto") { FA.texto = e.target.value; auditoria(); } });
   $("#vista-auditoria").addEventListener("click", (e) => {
-    if (e.target.id === "d-audit") { auditar("EXPORTACION", "Descarga de audit.log"); Tecnico.descargar("audit.log", Tecnico.textoAuditLog()); auditoria(); }
-    if (e.target.id === "d-gestion") { Tecnico.descargar("gestion.json", Tecnico.textoGestion(), "application/json"); auditar("EXPORTACION", `Descarga de gestion.json (${Object.keys(ST.seg).length} registros)`); auditoria(); }
-    if (e.target.id === "d-reglas") { Tecnico.descargar("rules.json", JSON.stringify(ST.reglas.datos, null, 2) + "\n", "application/json"); auditar("EXPORTACION", "Descarga de rules.json"); auditoria(); }
+    if (e.target.id === "d-audit") { auditar("EXPORTACION", "Descarga de audit.log"); Tecnico.descargar("audit.log", Tecnico.textoAuditLog()); auditoria(); actualizarBadges(); }
+    if (e.target.id === "d-gestion") { Tecnico.descargar("gestion.json", Tecnico.textoGestion(), "application/json"); auditar("EXPORTACION", `Descarga de gestion.json (${Object.keys(ST.seg).length} registros)`); auditoria(); actualizarBadges(); }
+    if (e.target.id === "d-reglas") { Tecnico.descargar("rules.json", JSON.stringify(ST.reglas.datos, null, 2) + "\n", "application/json"); auditar("EXPORTACION", "Descarga de rules.json"); auditoria(); actualizarBadges(); }
   });
 
   // ── Rol activo (lo fija acceso.js al entrar y al cerrar sesión) ─────────
   function ponerRol(rol) {
     ST.rol = rol;
     $("#pestana-auditoria").hidden = !esTecnico();
-    if (!esTecnico() && !$("#vista-auditoria").hidden) document.querySelector('[data-pestana="panel"]').click();
     editorReglas();
-    if (!$("#vista-auditoria").hidden) auditoria();
+    auditoria();
+    lista();
+    actualizarBadges();
     if (modal.open) modal.close();
   }
   function reiniciar() { opciones(); reglas(); filtrar(); }
@@ -840,6 +1061,6 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     if (distintas) aplicarReglas(guardadas, { auditarCambio: false }).catch(() => Tecnico.guardarLS(CLAVE_REGLAS, null));
     else Tecnico.guardarLS(CLAVE_REGLAS, null);
   }
-  window.Dashboard = { ST, abrir, filtrar, ponerRol, aplicarReglas, informeHtml };      // Para depurar desde la consola y para los tests
-  document.documentElement.dataset.listo = "1";   // Señal para las pruebas automáticas
+  window.Dashboard = { ST, abrir, filtrar, ponerRol, aplicarReglas, informeHtml, redimensionarGraficos };
+  document.documentElement.dataset.listo = "1";
 })();

@@ -1,12 +1,15 @@
 __pycache__/
 *.py[cod]
 *.tmp
+*.egg-info/
 .venv/
 venv/
 .pytest_cache/
-# Secretos de Streamlit (contraseña de la web): nunca al repositorio
+.DS_Store
+# Secretos locales (nunca al repositorio)
 .streamlit/secrets.toml
-# Datos de trabajo de los técnicos (se crean al usar la web)
+legacy_servidor/.streamlit/secrets.toml
+# Datos de trabajo locales
 gestion.json
 # Dashboard generado: lo crea `python3 main.py --html` / GitHub Actions
 index.html

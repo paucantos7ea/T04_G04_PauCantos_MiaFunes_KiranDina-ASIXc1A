@@ -60,7 +60,7 @@
     document.body.classList.remove("bloqueado");
     bloqueables().forEach((n) => n.removeAttribute("inert"));
     $("#acceso").hidden = true;
-    $("#rol-activo").textContent = (rol === "Técnico" ? "🛠️ Modo " : "👁️ Modo ") + rol;
+    $("#rol-activo").textContent = (rol === "Técnico" ? "🛠️ " : "👁️ ") + rol;
     $("#sesion").hidden = false;
     document.documentElement.dataset.rol = rol;
     if (window.Dashboard) { window.Dashboard.ponerRol(rol); window.Dashboard.filtrar(); }  // Chart.js mide ya visible
