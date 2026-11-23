@@ -91,6 +91,7 @@ def test_html_autocontenido(casos, reglas):
     for id_acc in ("acc-validez", "acc-evolucion", "acc-masivas", "acc-explorador", "acc-anomalias", "acc-reglas"):
         assert f'id="{id_acc}"' in html
     assert 'id="salto-seccion"' in html
+    assert 'id="menu-descargas"' in html and 'id="descargar-json"' in html
     assert 'id="descargar-cuarentena"' in html
     assert 'id="btn-expandir-todo"' in html and 'id="btn-contraer-todo"' in html
     # Sin recursos locales: solo Chart.js por CDN (GitHub Pages sin rutas rotas)
@@ -478,6 +479,7 @@ ARNES_ACORDEONES = r"""
     r.anomContador = document.getElementById("anom-contador").textContent;
     r.anomFilas = document.querySelectorAll("#anom-lista tbody tr, #anom-lista .registro").length;
     r.anomCsvCabecera = window.Dashboard.cuarentenaCsvTexto(window.Dashboard.ST.anomFiltradas).split("\r\n")[0];
+    r.jsonValidas = JSON.parse(window.Dashboard.incidenciesJsonTexto(window.Dashboard.ST.todos)).length;
     document.querySelector("#anom-lista button[data-ver]").click();
     r.modalAbierto = document.getElementById("modal").open;
   } catch (e) { r.error = String(e && e.stack || e); }
@@ -514,4 +516,5 @@ def test_acordeones_y_navegacion_en_el_navegador(casos, reglas, tmp_path):
     assert "Mostrando 1–10 de" in r["anomContador"]
     assert r["anomFilas"] == 10
     assert r["anomCsvCabecera"] == "\ufeffid,tipo_anomalia,campo_afectado,regla,motivo,valor_detectado,auto_reparada"
+    assert r["jsonValidas"] == casos.resumen.validas
     assert r["modalAbierto"] is True

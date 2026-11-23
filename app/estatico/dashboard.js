@@ -989,10 +989,33 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
 `;
   }
   const pad2 = (n) => String(n).padStart(2, "0");
+  const menuDescargas = $("#menu-descargas");
+  function incidenciesJsonTexto(registros) {
+    const validas = registros.filter((r) => r.valida).map((r) => {
+      const obj = { id: r.id };
+      for (const [nombre, valor] of r.campos) obj[nombre] = valor === null ? "" : valor;
+      return obj;
+    });
+    return JSON.stringify(validas, null, 2) + "\n";
+  }
   $("#descargar-informe").addEventListener("click", () => {
+    if (menuDescargas) menuDescargas.open = false;
     Tecnico.descargar("informe_estado.html", informeHtml(), "text/html");
     auditar("EXPORTACION", `Descarga de informe_estado.html (${ST.todos.length} registros)`);
     if (esTecnico()) { auditoria(); actualizarBadges(); }
+  });
+  $("#descargar-json").addEventListener("click", () => {
+    if (menuDescargas) menuDescargas.open = false;
+    const nVal = ST.todos.filter((r) => r.valida).length;
+    Tecnico.descargar("incidencies.json", incidenciesJsonTexto(ST.todos), "application/json");
+    auditar("EXPORTACION", `Descarga de incidencies.json (${nVal} incidencias válidas)`);
+    if (esTecnico()) { auditoria(); actualizarBadges(); }
+  });
+  document.addEventListener("click", (e) => {
+    if (menuDescargas && menuDescargas.open && !menuDescargas.contains(e.target)) menuDescargas.open = false;
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && menuDescargas && menuDescargas.open) menuDescargas.open = false;
   });
 
   // ── Editor de reglas (modo Técnico) ────────────────────────────────────
@@ -1219,6 +1242,6 @@ ${alertas.length ? `<table><thead><tr><th>ID</th><th>Severidad</th><th>Estado</t
     if (distintas) aplicarReglas(guardadas, { auditarCambio: false }).catch(() => Tecnico.guardarLS(CLAVE_REGLAS, null));
     else Tecnico.guardarLS(CLAVE_REGLAS, null);
   }
-  window.Dashboard = { ST, abrir, filtrar, ponerRol, aplicarReglas, informeHtml, redimensionarGraficos, cuarentenaCsvTexto };
+  window.Dashboard = { ST, abrir, filtrar, ponerRol, aplicarReglas, informeHtml, redimensionarGraficos, cuarentenaCsvTexto, incidenciesJsonTexto };
   document.documentElement.dataset.listo = "1";
 })();

@@ -30,16 +30,40 @@ try { if (localStorage.getItem("monitor-tema") === "oscuro") document.documentEl
 
 <header class="cabecera" inert>
   <div class="cabecera-interior">
-    <div class="cabecera-marca">
-      <h1>Monitor de incidencias</h1>
-      <p class="sello" id="sello">{{SELLO}}</p>
+    <div class="cabecera-izquierda">
+      <details class="menu-descargas" id="menu-descargas">
+        <summary class="boton boton-primario menu-descargas-btn" aria-label="Menú de descargas">
+          <span aria-hidden="true">☰</span>
+          <span>Descargas</span>
+          <span class="menu-flecha" aria-hidden="true">▾</span>
+        </summary>
+        <div class="menu-descargas-lista" role="menu">
+          <button class="menu-item" id="descargar-informe" type="button" role="menuitem" title="Descargar informe HTML ejecutivo listo para imprimir o guardar como PDF">
+            <span class="menu-item-icono" aria-hidden="true">📄</span>
+            <span class="menu-item-texto">
+              <strong>Informe Ejecutivo</strong>
+              <small>informe_estado.html (PDF / imprimir)</small>
+            </span>
+          </button>
+          <button class="menu-item" id="descargar-json" type="button" role="menuitem" title="Descargar todas las incidencias válidas en formato JSON">
+            <span class="menu-item-icono" aria-hidden="true">📦</span>
+            <span class="menu-item-texto">
+              <strong>incidencies.json</strong>
+              <small>Incidencias válidas en JSON</small>
+            </span>
+          </button>
+        </div>
+      </details>
+      <div class="cabecera-marca">
+        <h1>Monitor de incidencias</h1>
+        <p class="sello" id="sello">{{SELLO}}</p>
+      </div>
     </div>
     <div class="cabecera-acciones">
       <div class="selector-tema" id="selector-tema" role="group" aria-label="Selector de tema">
         <button type="button" data-tema="claro" aria-pressed="true">☀️ Claro</button>
         <button type="button" data-tema="oscuro" aria-pressed="false">🌙 Oscuro</button>
       </div>
-      <button class="boton boton-primario" id="descargar-informe" type="button" title="Descargar informe HTML ejecutivo listo para imprimir o guardar como PDF">📄 Informe Ejecutivo</button>
       <label class="boton boton-discreto" for="xml-local" title="Analiza otro archivo XML en este navegador, sin subirlo a ningún sitio">📂 XML local</label>
       <input type="file" id="xml-local" accept=".xml,text/xml,application/xml" hidden>
       <span class="sesion" id="sesion" hidden>
